@@ -243,11 +243,16 @@ def render_trimmed_turn(entry: dict, next_entry: dict | None) -> tuple[str, str,
     return None
 
 
-def build_diff_html(entries: list[dict], max_turns: int = 60) -> str:
+def build_diff_html(entries: list[dict], max_turns: int | None = None) -> str:
+    """Render the side-by-side diff. `max_turns=None` means ALL turns —
+    needed to give reviewers full session context. xhuge → ~5-10 MB HTML;
+    acceptable trade for reviewability. Pass an int to cap if needed."""
     raw_html: list[str] = []
     trim_html: list[str] = []
 
-    interesting = [e for e in entries if e.get("type") in ("user", "assistant")][:max_turns]
+    interesting = [e for e in entries if e.get("type") in ("user", "assistant")]
+    if max_turns is not None:
+        interesting = interesting[:max_turns]
 
     for i, e in enumerate(interesting):
         nxt = interesting[i + 1] if i + 1 < len(interesting) else None
@@ -440,7 +445,7 @@ def main() -> int:
     options: list[str] = []
     for f in fixtures:
         entries = load_jsonl(str(f))
-        d_html = build_diff_html(entries, max_turns=40)
+        d_html = build_diff_html(entries, max_turns=None)
         b_html = render_brief_html(entries, f.stem)
         active = "active" if f.stem == default_fixture else ""
         sel = " selected" if f.stem == default_fixture else ""
