@@ -32,7 +32,9 @@ import re
 from datetime import datetime, timezone
 
 from compaction.extract import (
+    SUBAGENT_TOOL_NAMES,
     assistant_blocks,
+    extract_agent_reports,
     extract_code_anchors,
     extract_decisions,
     extract_errors,
@@ -221,6 +223,9 @@ def _render_tier1(
     code_anchor_max_chars: int = 800,
     active_goal_max_chars: int = 1500,
     recalled_memories: list[str] | None = None,
+    agent_reports: list[tuple[str, str, str]] | None = None,
+    agent_report_limit: int = 5,
+    agent_report_max_chars: int = 1500,
 ) -> str:
     archive_line = (
         f"Full session: memory doc `{archive_hash}` — recall via `memory doc get {archive_hash}`"
@@ -262,6 +267,15 @@ def _render_tier1(
             out.append("```")
             out.append(_truncate(err, 400))
             out.append("```")
+
+    if agent_reports:
+        kept_reports = agent_reports[-agent_report_limit:]
+        out.append(f"\n## Sub-Agent Findings ({len(kept_reports)})")
+        for desc, sub, txt in kept_reports:
+            header = desc.strip() or "(no description)"
+            sub_part = f" — {sub}" if sub else ""
+            out.append(f"\n### {header}{sub_part}")
+            out.append(_truncate(txt, agent_report_max_chars))
 
     if files:
         capped_files = files[:file_limit]
@@ -314,6 +328,7 @@ def render_brief(
     decision_limit: int = 10,
     last_user_msgs: int = 20,
     recalled_memories: list[str] | None = None,
+    agent_report_limit: int = 5,
 ) -> tuple[str, str]:
     """Render both tiers. Returns (tier1, tier2).
 
@@ -327,6 +342,24 @@ def render_brief(
     todos = extract_todo_snapshot(entries)
     errors = extract_errors(entries)
     code_anchors = extract_code_anchors(entries)
+    # Tier1 gets truncated reports (1500 char cap); tier2 keeps full bodies.
+    agent_reports_tier1 = extract_agent_reports(entries, max_chars=1500)
+    agent_reports_tier2 = extract_agent_reports(entries, max_chars=0)
+
+    # Build a map of Agent/Task tool_use_id → (description, subagent_type) so
+    # we can splice the synthesized report text into tier2 immediately after
+    # the assistant turn that dispatched the sub-agent.
+    agent_use_meta: dict[str, tuple[str, str]] = {}
+    for e in entries:
+        if e.get("type") != "assistant":
+            continue
+        for b in assistant_blocks(e):
+            if b.get("type") == "tool_use" and b.get("name") in SUBAGENT_TOOL_NAMES:
+                inp = b.get("input") or {}
+                agent_use_meta[str(b.get("id") or "")] = (
+                    str(inp.get("description") or ""),
+                    str(inp.get("subagent_type") or ""),
+                )
 
     seen_user: set[str] = set()
     seen_paths: set[str] = set()
@@ -339,6 +372,39 @@ def render_brief(
                 continue
             seen_user.add(t)
             convo.append(("user", t))
+        elif e.get("type") == "user":
+            # Synthetic user wrap holding a tool_result. Normally dropped, but
+            # if it carries an Agent/Task report, inline it as a synthetic
+            # assistant turn so tier2 keeps the synthesized findings.
+            c = e.get("message", {}).get("content")
+            if isinstance(c, list):
+                # Prefer the cleaner top-level toolUseResult.content over the
+                # inline message.content[].content[].text (which carries
+                # trailing UI noise like `agentId: ...` and `<usage>`).
+                from compaction.extract import _agent_report_text_from_tooluseresult
+                tur_text = _agent_report_text_from_tooluseresult(e.get("toolUseResult"))
+                for b in c:
+                    if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                        continue
+                    meta = agent_use_meta.get(str(b.get("tool_use_id") or ""))
+                    if not meta:
+                        continue
+                    text = tur_text
+                    if not text:
+                        tc = b.get("content")
+                        if isinstance(tc, list):
+                            text = "\n".join(
+                                blk.get("text", "")
+                                for blk in tc
+                                if isinstance(blk, dict) and blk.get("type") == "text"
+                            )
+                        elif isinstance(tc, str):
+                            text = tc
+                    text = (text or "").strip()
+                    if len(text) >= 200:
+                        desc = meta[0] or "(no description)"
+                        sub = f" {meta[1]}" if meta[1] else ""
+                        convo.append(("assistant", f"[Sub-agent report:{sub} {desc}]\n{text}"))
         elif e.get("type") == "assistant":
             r = render_assistant(e, nxt, seen_paths=seen_paths)
             if r:
@@ -364,11 +430,15 @@ def render_brief(
         last_user_msgs=last_user_msgs,
         code_anchor_limit=code_anchor_limit,
         recalled_memories=recalled_memories,
+        agent_reports=agent_reports_tier1,
+        agent_report_limit=agent_report_limit,
     )
 
     # Progressive trim if tier1 over budget. Order: shrink files → fewer
-    # code anchors → fewer user msgs → tighter per-section caps.
-    def _attempt(file_lim, code_lim, user_msg_lim, code_chars, user_chars):
+    # code anchors → fewer user msgs → tighter per-section caps. Agent
+    # report cap also tightens because reports can be 1500 chars × 5 = 7.5 KB.
+    def _attempt(file_lim, code_lim, user_msg_lim, code_chars, user_chars,
+                 agent_lim, agent_chars):
         return _render_tier1(
             iso=iso, session_id=session_id, cwd=cwd, archive_hash=archive_hash,
             tier2_path=tier2_path, signal_msgs=signal_msgs, decisions=decisions,
@@ -377,13 +447,16 @@ def render_brief(
             code_anchor_limit=code_lim, file_limit=file_lim,
             code_anchor_max_chars=code_chars, user_msg_max_chars=user_chars,
             recalled_memories=recalled_memories,
+            agent_reports=agent_reports_tier1,
+            agent_report_limit=agent_lim,
+            agent_report_max_chars=agent_chars,
         )
 
     for params in [
-        (50, 10, 20, 800, 500),   # default
-        (30, 5, 15, 400, 300),    # 1st squeeze
-        (20, 3, 10, 200, 200),    # 2nd squeeze
-        (10, 2, 5, 100, 120),     # 3rd squeeze
+        (50, 10, 20, 800, 500, 5, 1500),   # default
+        (30, 5, 15, 400, 300, 5, 800),     # 1st squeeze
+        (20, 3, 10, 200, 200, 3, 500),     # 2nd squeeze
+        (10, 2, 5, 100, 120, 2, 300),      # 3rd squeeze
     ]:
         tier1 = _attempt(*params)
         if len(tier1.encode("utf-8")) <= TIER1_BUDGET_BYTES:

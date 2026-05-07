@@ -293,6 +293,148 @@ def test_system_injected_user_msgs_classified_as_noise(msg):
     assert extract.is_noise_user_msg(msg)
 
 
+def _agent_use(tool_use_id: str, description: str, subagent_type: str) -> dict:
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "Agent",
+                    "input": {
+                        "description": description,
+                        "subagent_type": subagent_type,
+                        "prompt": "irrelevant prompt",
+                    },
+                }
+            ],
+        },
+    }
+
+
+def _agent_result(tool_use_id: str, text: str, *, with_tooluseresult: bool = False) -> dict:
+    e: dict = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": [{"type": "text", "text": text}],
+                }
+            ],
+        },
+    }
+    if with_tooluseresult:
+        e["toolUseResult"] = {"content": [{"type": "text", "text": text}]}
+    return e
+
+
+def test_extract_agent_reports_basic():
+    entries = [
+        _agent_use("t1", "research foo", "general-purpose"),
+        _agent_result("t1", "x" * 500),
+    ]
+    out = extract.extract_agent_reports(entries)
+    assert len(out) == 1
+    desc, sub, txt = out[0]
+    assert desc == "research foo"
+    assert sub == "general-purpose"
+    assert txt.startswith("x")
+
+
+def test_extract_agent_reports_drops_short_stubs():
+    """A 50-char "Task interrupted" message must not bloat the brief."""
+    entries = [
+        _agent_use("t1", "research foo", "explore"),
+        _agent_result("t1", "Task interrupted"),
+    ]
+    assert extract.extract_agent_reports(entries) == []
+
+
+def test_extract_agent_reports_truncates_to_max_chars():
+    entries = [
+        _agent_use("t1", "long", "explore"),
+        _agent_result("t1", "y" * 5000),
+    ]
+    out = extract.extract_agent_reports(entries, max_chars=200)
+    assert len(out[0][2]) <= 200
+    assert out[0][2].endswith("...")
+
+
+def test_extract_agent_reports_max_chars_zero_keeps_full_body():
+    entries = [
+        _agent_use("t1", "long", "explore"),
+        _agent_result("t1", "z" * 5000),
+    ]
+    out = extract.extract_agent_reports(entries, max_chars=0)
+    assert len(out[0][2]) == 5000
+
+
+def test_extract_agent_reports_prefers_tooluseresult_clean_text():
+    """When `toolUseResult.content` is present, prefer it over the inline
+    `message.content[].content[].text` (which carries trailing UI noise)."""
+    inline_noisy = "real text\nagentId: x123 trailing noise"
+    clean = "real text only"
+    entries = [
+        _agent_use("t1", "x", "y"),
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [{"type": "text", "text": inline_noisy + "x" * 400}],
+                    }
+                ],
+            },
+            "toolUseResult": {"content": [{"type": "text", "text": clean + "x" * 400}]},
+        },
+    ]
+    out = extract.extract_agent_reports(entries)
+    assert "agentId" not in out[0][2]
+    assert out[0][2].startswith(clean)
+
+
+def test_extract_agent_reports_falls_back_when_no_tooluseresult():
+    entries = [
+        _agent_use("t1", "x", "y"),
+        _agent_result("t1", "fallback text " * 30),  # >200 chars
+    ]
+    out = extract.extract_agent_reports(entries)
+    assert "fallback text" in out[0][2]
+
+
+def test_extract_agent_reports_unmatched_id_skipped():
+    """tool_result for a non-Agent tool_use_id (e.g. Bash) is ignored."""
+    entries = [
+        _agent_use("t1", "real agent", "x"),
+        _agent_result("t1", "ok " * 100),  # matched
+        # Some other tool_result with a different id, no matching Agent use
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "bash-id-99",
+                        "content": [{"type": "text", "text": "ls output " * 100}],
+                    }
+                ],
+            },
+        },
+    ]
+    out = extract.extract_agent_reports(entries)
+    assert len(out) == 1
+    assert "real agent" == out[0][0]
+
+
 def test_iter_signal_user_msgs_drops_dups_and_noise():
     entries = [
         _user_str("ok"),

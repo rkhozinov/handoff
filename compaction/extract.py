@@ -32,6 +32,9 @@ PRINTABLE_TOOL_INPUT_KEYS = {
     "WebSearch": ("query",),
     "TaskCreate": ("subject",),
     "TaskUpdate": ("taskId", "status"),
+    # Sub-agent dispatch — show what was researched, not just `[Agent]`.
+    "Agent": ("description", "subagent_type"),
+    "Task": ("description", "subagent_type"),
 }
 
 # Per-tool max value length. Bash commands are ephemeral and bloat the brief.
@@ -254,6 +257,102 @@ def extract_files_touched(entries: Iterable[dict]) -> list[str]:
                 for p in bash_path_re.findall(cmd):
                     seen.setdefault(p, None)
     return list(seen.keys())
+
+
+SUBAGENT_TOOL_NAMES = frozenset({"Agent", "Task"})
+# Below this length, treat as stub ("Task interrupted by user", etc.) and skip.
+AGENT_REPORT_MIN_CHARS = 200
+
+
+def extract_agent_reports(
+    entries: Iterable[dict],
+    *,
+    max_chars: int = 1500,
+    min_chars: int = AGENT_REPORT_MIN_CHARS,
+) -> list[tuple[str, str, str]]:
+    """Pull synthesized sub-agent reports out of the transcript.
+
+    Returns `(description, subagent_type, report_text)` tuples in chronological
+    order. Identifies reports by `tool_use_id` linkage between an assistant
+    `tool_use` block whose `name` is `Agent`/`Task` and the matching `tool_result`
+    in a later synthetic `user` entry.
+
+    These reports are high-signal synthesized text (median ~1.9k chars across
+    real fixtures) that today's pipeline drops along with all other tool_results.
+    Unlike Bash/Read output, they're NOT recoverable from any other source —
+    losing them forces a re-run of the agent next session, wasting tokens and
+    obscuring why a decision was made.
+
+    Truncation is per-report at `max_chars` for tier1 budget. Tier2 should
+    pass a much larger cap (or 0) to keep full bodies.
+    """
+    use_idx: dict[str, tuple[str, str]] = {}
+    entries = list(entries)
+    for e in entries:
+        if e.get("type") != "assistant":
+            continue
+        for b in assistant_blocks(e):
+            if b.get("type") != "tool_use":
+                continue
+            if b.get("name") not in SUBAGENT_TOOL_NAMES:
+                continue
+            inp = b.get("input") or {}
+            use_idx[str(b.get("id") or "")] = (
+                str(inp.get("description") or ""),
+                str(inp.get("subagent_type") or ""),
+            )
+
+    out: list[tuple[str, str, str]] = []
+    for e in entries:
+        if e.get("type") != "user":
+            continue
+        c = e.get("message", {}).get("content")
+        if not isinstance(c, list):
+            continue
+        # Prefer the top-level `toolUseResult.content` when present — it holds
+        # the clean synthesized text without the inline UI noise (`agentId: ...`,
+        # trailing `<usage>` blocks) that lives in the displayed tool_result body.
+        tur_text = _agent_report_text_from_tooluseresult(e.get("toolUseResult"))
+        for b in c:
+            if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                continue
+            meta = use_idx.get(str(b.get("tool_use_id") or ""))
+            if not meta:
+                continue
+            text = tur_text
+            if not text:
+                tc = b.get("content")
+                if isinstance(tc, list):
+                    text = "\n".join(
+                        blk.get("text", "")
+                        for blk in tc
+                        if isinstance(blk, dict) and blk.get("type") == "text"
+                    )
+                elif isinstance(tc, str):
+                    text = tc
+            text = (text or "").strip()
+            if len(text) < min_chars:
+                continue
+            if max_chars and len(text) > max_chars:
+                text = text[: max_chars - 3].rstrip() + "..."
+            out.append((meta[0], meta[1], text))
+    return out
+
+
+def _agent_report_text_from_tooluseresult(tur: object) -> str:
+    """Extract clean text from the top-level `toolUseResult.content` array on a
+    user entry. Returns "" when the field is absent or shaped differently."""
+    if not isinstance(tur, dict):
+        return ""
+    content = tur.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts = [
+        blk.get("text", "")
+        for blk in content
+        if isinstance(blk, dict) and blk.get("type") == "text"
+    ]
+    return "\n".join(p for p in parts if p).strip()
 
 
 def extract_errors(entries: Iterable[dict], limit: int = 5, snippet_len: int = 300) -> list[str]:

@@ -120,6 +120,77 @@ def test_hard_truncate_passthrough_when_under_budget():
     assert _hard_truncate_bytes(small, 1000, suffix="\n[...]\n") == small
 
 
+def test_render_brief_includes_subagent_findings_section():
+    """Brief must surface synthesized sub-agent reports — the bug we just hit
+    where 39 KB of research findings were lost across /handoff."""
+    entries = [
+        _u("research compaction tools"),
+        _a(
+            [
+                {
+                    "type": "tool_use",
+                    "id": "t-agent-1",
+                    "name": "Agent",
+                    "input": {
+                        "description": "Research CC compaction hooks",
+                        "subagent_type": "general-purpose",
+                        "prompt": "investigate",
+                    },
+                }
+            ]
+        ),
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t-agent-1",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "PreCompact hook exists. SessionStart `compact` matcher fires post-compaction. autoCompactEnabled flag. " * 6,
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    ]
+    out = _brief(entries, session_id="s", cwd="/c", archive_hash=None)
+    assert "## Sub-Agent Findings" in out
+    assert "Research CC compaction hooks" in out
+    assert "general-purpose" in out
+    assert "PreCompact hook exists" in out
+
+
+def test_render_brief_subagent_marker_shows_description():
+    """Tier1 + tier2 should render `[Agent description=... subagent_type=...]`,
+    not bare `[Agent]`."""
+    entries = [
+        _a(
+            [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "Agent",
+                    "input": {
+                        "description": "Probe redis pool",
+                        "subagent_type": "Explore",
+                    },
+                }
+            ]
+        ),
+    ]
+    tier1, tier2 = render_brief(entries, session_id="s", cwd="/c", archive_hash=None)
+    combined = tier1 + tier2
+    assert "[Agent" in combined
+    # Description and subagent_type both surface in the marker.
+    assert "Probe redis pool" in combined
+    assert "Explore" in combined
+
+
 def test_hard_truncate_handles_multibyte_boundary():
     """Cut must not split a UTF-8 multibyte codepoint."""
     from compaction.trim import _hard_truncate_bytes

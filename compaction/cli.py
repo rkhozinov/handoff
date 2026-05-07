@@ -14,6 +14,7 @@ from pathlib import Path
 
 from compaction.archive import archive_full_session
 from compaction.extract import (
+    extract_agent_reports,
     extract_decisions,
     iter_signal_user_msgs,
     load_jsonl,
@@ -23,6 +24,7 @@ from compaction.recall import (
     format_memory_line,
     project_tag_from_cwd,
     search_memories,
+    store_agent_reports,
 )
 from compaction.trim import render_brief
 
@@ -61,6 +63,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=5,
         help="Max number of recalled memories to embed in the brief (default: 5)",
+    )
+    p.add_argument(
+        "--no-agent-store",
+        action="store_true",
+        help="Skip auto-storing sub-agent reports to memory (default: store)",
     )
     return p.parse_args(argv)
 
@@ -108,6 +115,17 @@ def main(argv: list[str] | None = None) -> int:
         recalled_memories=recalled_lines or None,
     )
 
+    # Auto-store sub-agent reports to memory so they survive /clear and become
+    # recall-able in future sessions. Use the full (untruncated) bodies.
+    agent_stored = 0
+    agent_count = 0
+    if not args.no_agent_store:
+        full_reports = extract_agent_reports(entries, max_chars=0)
+        agent_count = len(full_reports)
+        agent_stored = store_agent_reports(
+            full_reports, project_tag=project_tag_from_cwd(args.cwd)
+        )
+
     tier1_path.write_text(tier1, encoding="utf-8")
     tier2_path.write_text(tier2, encoding="utf-8")
 
@@ -122,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.write(
         f"tier1={tier1_bytes}B (~{tier1_bytes // 4} tok)  "
         f"tier2={tier2_bytes}B (~{tier2_bytes // 4} tok)  "
-        f"archive={archive_hash[:12] if archive_hash else 'none'}\n"
+        f"archive={archive_hash[:12] if archive_hash else 'none'}  "
+        f"agent_reports={agent_stored}/{agent_count}\n"
     )
     return 0
 
