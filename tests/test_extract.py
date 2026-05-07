@@ -551,3 +551,74 @@ def test_iter_signal_user_msgs_elides_pasted_output():
     assert "[elided" in elided
     # Original would be huge; elided should be small
     assert len(elided) < 1000
+
+
+# ---------- plans saved ----------
+
+
+def test_extract_plans_saved_basic():
+    """Write tool_use under /plans/ → captured."""
+    e = _assistant_blocks([
+        {
+            "type": "tool_use",
+            "name": "Write",
+            "input": {
+                "file_path": "/Users/x/.claude/plans/foo.md",
+                "content": "# Plan: do the thing",
+            },
+        }
+    ])
+    plans = extract.extract_plans_saved([e])
+    assert plans == [("/Users/x/.claude/plans/foo.md", "# Plan: do the thing")]
+
+
+def test_extract_plans_saved_ignores_non_plan_writes():
+    e = _assistant_blocks([
+        {
+            "type": "tool_use",
+            "name": "Write",
+            "input": {"file_path": "/x/foo.md", "content": "not a plan"},
+        }
+    ])
+    assert extract.extract_plans_saved([e]) == []
+
+
+def test_extract_plans_saved_dedups_same_path_to_last_write():
+    e = _assistant_blocks([
+        {
+            "type": "tool_use",
+            "name": "Write",
+            "input": {"file_path": "/p/plans/a.md", "content": "v1"},
+        },
+        {
+            "type": "tool_use",
+            "name": "Write",
+            "input": {"file_path": "/p/plans/a.md", "content": "v2 final"},
+        },
+    ])
+    plans = extract.extract_plans_saved([e])
+    assert plans == [("/p/plans/a.md", "v2 final")]
+
+
+def test_extract_plans_saved_only_write_tool():
+    """Edit doesn't count — Write is the only thing that creates/replaces a plan."""
+    e = _assistant_blocks([
+        {
+            "type": "tool_use",
+            "name": "Edit",
+            "input": {"file_path": "/p/plans/a.md", "new_string": "x"},
+        }
+    ])
+    assert extract.extract_plans_saved([e]) == []
+
+
+def test_extract_plans_saved_picks_up_singular_plan_dir():
+    """Both `plans` and `plan` directories match (some users/projects use either)."""
+    e = _assistant_blocks([
+        {
+            "type": "tool_use",
+            "name": "Write",
+            "input": {"file_path": "/p/plan/a.md", "content": "ok"},
+        }
+    ])
+    assert extract.extract_plans_saved([e]) == [("/p/plan/a.md", "ok")]

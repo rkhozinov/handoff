@@ -499,3 +499,32 @@ def extract_todo_snapshot(entries: Iterable[dict]) -> str | None:
             if b.get("type") == "tool_use" and b.get("name") in ("TaskCreate", "TaskUpdate"):
                 last = b.get("input")
     return json.dumps(last, indent=2) if last else None
+
+
+_PLAN_PATH_RE = re.compile(r"(?:^|/)plans?/.+\.md$", re.IGNORECASE)
+
+
+def extract_plans_saved(entries: Iterable[dict]) -> list[tuple[str, str]]:
+    """Return (path, content) for every plan file the assistant wrote.
+
+    Detects Write tool_use calls whose `file_path` lives under a `/plans/`
+    (or `/plan/`) directory and ends in `.md`. If a plan path is written
+    multiple times, the last write wins (assumed to be the final state).
+    Always preserved in the brief — plans are why the session existed.
+    """
+    by_path: dict[str, str] = {}
+    for e in entries:
+        if e.get("type") != "assistant":
+            continue
+        for b in assistant_blocks(e):
+            if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                continue
+            if b.get("name") != "Write":
+                continue
+            inp = b.get("input") or {}
+            path = str(inp.get("file_path") or "")
+            if not path or not _PLAN_PATH_RE.search(path):
+                continue
+            content = str(inp.get("content") or "")
+            by_path[path] = content
+    return list(by_path.items())
