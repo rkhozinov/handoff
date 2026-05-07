@@ -71,10 +71,15 @@ table tr:hover { background: #1c2128; }
 .diff-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
   margin-top: 20px;
+  /* Break out of the 1400px .container cap so the diff fills the viewport. */
+  width: calc(100vw - 80px);
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
 }
 .diff-col {
   background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-  padding: 20px; max-height: 600px; overflow-y: auto;
+  padding: 20px; max-height: 85vh; overflow-y: auto;
   font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.85em;
 }
 .diff-col h3 {
