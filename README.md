@@ -70,7 +70,11 @@ Run `/handoff` when the context starts filling. It:
 1. Archives the full session as a `memory doc` (recoverable via `memory doc search`)
 2. Writes a deterministic trimmed brief to `~/.claude/compaction/<session_id>.md`
 3. Auto-stores any sub-agent reports as memory entries
-4. Re-arms `latest-<cwd_slug>.md` symlink for explicit restore
+
+Briefs are keyed by `session_id`. Claude Code keeps `session_id` stable across
+`/clear` and `claude -c` resume, so `/handon` deterministically restores the
+right brief no matter which worktree or branch you're in. No symlinks, no
+cwd-slug heuristics, no cross-branch ghosting.
 
 Then run `/clear` for a fresh slate, and `/handon` when you want the brief
 back. Restoration is always explicit — there is no SessionStart hook that

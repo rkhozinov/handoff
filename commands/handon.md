@@ -1,33 +1,46 @@
 ---
-description: Explicitly restore the latest /handoff brief for the current cwd. Run this after /clear when you want context back. There is no SessionStart auto-restore hook — restoration is always explicit.
+description: Explicitly restore the latest /handoff brief for the current session into the conversation. Run after /clear when you want context back. Restoration is always explicit — there is no SessionStart auto-restore hook.
 ---
 
-Restore the latest /handoff brief for this cwd into the conversation.
+Restore the /handoff brief for the **current session** into the conversation.
+
+The brief is keyed on `session_id` — not on cwd, not on branch. Claude Code keeps
+the same `session_id` across `/clear` and across `claude -c` resume, so this
+deterministically recovers the right brief no matter which worktree or branch
+you're in.
 
 Run these steps:
 
-1. Compute the cwd-keyed brief path. Use the central slug helper so the
-   shape matches what `/handoff` writes (cwd + branch fingerprint when in
-   a git checkout):
+1. Resolve the current session id from the newest JSONL in this cwd's CC
+   project dir (the file CC is writing to right now is the one you're in):
+
    ```bash
-   SLUG="$(cd ~/repos/claude-compaction && PYTHONPATH=. python3 -m compaction.slug "$PWD" 2>/dev/null || echo "${PWD//\//-}")"
-   BRIEF="$HOME/.claude/compaction/latest-${SLUG}.md"
+   PROJECT_DIR="$HOME/.claude/projects/${PWD//\//-}"
+   SID=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl)
+   BRIEF="$HOME/.claude/compaction/${SID}.md"
    ```
-   The `||` fallback preserves restore behavior if the helper is unavailable.
 
-2. If the file does not exist or is older than 24 hours, list available
-   briefs in `~/.claude/compaction/` (excluding `consumed-*`, `latest-*`,
-   `*-full.md`) sorted by mtime, and ask the user which one to load.
-   Otherwise proceed with the cwd-keyed brief.
+2. If `BRIEF` exists and is younger than 24 hours, that's the file. Read it
+   with the Read tool and treat its contents as ground-truth context for the
+   resumed work — Active Goal, Decisions, Open TodoList, Sub-Agent Findings
+   all override anything you might otherwise infer.
 
-3. Read the brief file with the Read tool. Treat its contents as
-   ground-truth context for the resumed work — Active Goal, Decisions,
-   Open TodoList, Sub-Agent Findings all override anything you might
-   otherwise infer.
+3. If `BRIEF` does not exist (no /handoff was run for this session) or is
+   stale (>24h), fall back: list the most recent briefs in
+   `~/.claude/compaction/` and ask the user which one to load:
+
+   ```bash
+   ls -lt "$HOME/.claude/compaction/"*.md 2>/dev/null \
+     | grep -v -E 'consumed-|-full\.md$' \
+     | head -10
+   ```
+
+   Show the list with each brief's first-line `# Session Brief — <ts>` header
+   for context (run `head -1 <file>` on each).
 
 4. After loading, print one line confirming what was restored:
    `Restored: <session_id> from <ts>, <N> agent reports, <N> decisions`
 
-This command is idempotent — invoking it twice loads the same brief
-twice. It does not consume or rename the symlink, so you can re-run
-`/handon` whenever context resets again.
+This command is idempotent — invoking it twice loads the same brief twice.
+It does not consume or rename any file, so you can re-run `/handon` whenever
+context resets again.

@@ -3,7 +3,9 @@
 Writes:
   ~/.claude/compaction/<session_id>.md       — tier1 (/handon Read target)
   ~/.claude/compaction/<session_id>-full.md  — tier2 (full trimmed conversation)
-  ~/.claude/compaction/latest-<cwd_slug>.md  — symlink → tier1 (survives /clear)
+
+/handon resolves the brief by current session_id (read from the newest
+JSONL in ~/.claude/projects/<encoded-cwd>/) — no symlinks, no slug.
 """
 from __future__ import annotations
 
@@ -26,7 +28,6 @@ from compaction.recall import (
     search_memories,
     store_agent_reports,
 )
-from compaction.slug import cwd_slug, detect_branch
 from compaction.trim import render_brief
 
 
@@ -122,11 +123,6 @@ def main(argv: list[str] | None = None) -> int:
 
     tier1_path.write_text(tier1, encoding="utf-8")
     tier2_path.write_text(tier2, encoding="utf-8")
-
-    latest_path = out_dir / f"latest-{cwd_slug(args.cwd, detect_branch(args.cwd))}.md"
-    if latest_path.is_symlink() or latest_path.exists():
-        latest_path.unlink()
-    latest_path.symlink_to(tier1_path.name)
 
     print(str(tier1_path))
     tier1_bytes = len(tier1.encode("utf-8"))
