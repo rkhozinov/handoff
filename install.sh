@@ -22,7 +22,7 @@ for h in precompact.sh postcompact-restore.sh context-warn.sh; do
 done
 
 # 4. Symlink slash commands
-for c in handoff.md; do
+for c in handoff.md handon.md; do
   ln -sf "$ROOT/commands/$c" "$CC_HOME/commands/$c"
   echo "  command: $CC_HOME/commands/$c -> $ROOT/commands/$c"
 done

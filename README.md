@@ -69,9 +69,19 @@ Run `/handoff` when the context starts filling. It:
 
 1. Archives the full session as a `memory doc` (recoverable via `memory doc search`)
 2. Writes a deterministic trimmed brief to `~/.claude/compaction/<session_id>.md`
+3. Auto-stores any sub-agent reports as memory entries
+4. Re-arms `latest-<cwd_slug>.md` symlink for explicit restore
 
-Then run `/clear`. The SessionStart(compact) hook auto-injects the brief into
-your next message.
+Then either:
+
+- Run `/clear` for a fresh slate (default — no auto-restore), then `/handon`
+  when you want the brief back. Recommended.
+- Run `claude -c` from the same cwd → SessionStart `resume` matcher injects
+  the brief once and consumes the symlink.
+
+`/handon` reads the latest brief for the current cwd via the Read tool. It's
+idempotent (re-runnable) and never auto-consumes — use it whenever you want
+to re-anchor.
 
 If the trimmer dropped something you actually needed, recall the full archive:
 `memory doc get <hash>`.
