@@ -30,6 +30,6 @@ Steps:
      --cwd "$PWD"
    ```
 
-3. Print the brief path and the memory doc hash to the user. Tell them: **run `/clear` next.** The SessionStart hook will auto-inject the brief on the next message.
+3. Print the brief path and the memory doc hash to the user. Tell them: **run `/clear` next, then `/handon` when you want the brief restored.** Restoration is explicit — no SessionStart hook auto-injection.
 
 If the trimmer dropped something you actually needed, recall it from the full archive: `memory doc get <hash>`.

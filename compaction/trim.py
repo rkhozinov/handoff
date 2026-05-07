@@ -21,7 +21,7 @@ Preserves verbatim:
 Output is tiered:
   * tier1 — must-have summary (~<=20 KB target): metadata, archive ref,
     active goal, last N decisions, files touched, open todos, errors,
-    code anchors, last 20 signal user msgs. Suitable for SessionStart
+    code anchors, last 20 signal user msgs. Suitable for `/handon` Read
     injection (25 KB hard cap).
   * tier2 — full trimmed conversation transcript with squeezed markers.
     Lives on disk, referenced from tier1 metadata for on-demand `Read`.
@@ -55,7 +55,7 @@ NARRATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Tier-1 budget. SessionStart hook caps at 25 KB; leave headroom.
+# Tier-1 budget. /handon Read caps at 25 KB; leave headroom.
 TIER1_BUDGET_BYTES = 20_000
 
 
@@ -332,7 +332,7 @@ def render_brief(
 ) -> tuple[str, str]:
     """Render both tiers. Returns (tier1, tier2).
 
-    tier1 = compact summary intended for SessionStart injection (~<=20 KB).
+    tier1 = compact summary intended for /handon Read injection (~<=20 KB).
     tier2 = full trimmed conversation, written to a separate file and
             referenced from tier1 for on-demand Read.
     """
@@ -463,8 +463,8 @@ def render_brief(
             break
 
     # Hard cap: if even the tightest squeeze overflows TIER1_BUDGET_BYTES,
-    # byte-truncate so the SessionStart hook's 25 KB inject limit can't reject
-    # the whole brief. The full content stays in tier2 and the memory doc.
+    # byte-truncate so /handon's 25 KB Read budget can't reject the whole
+    # brief. The full content stays in tier2 and the memory doc.
     if len(tier1.encode("utf-8")) > TIER1_BUDGET_BYTES:
         tier1 = _hard_truncate_bytes(
             tier1,

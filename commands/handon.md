@@ -1,5 +1,5 @@
 ---
-description: Explicitly restore the latest /handoff brief for the current cwd. Use after /clear when you want context back without relying on the SessionStart hook.
+description: Explicitly restore the latest /handoff brief for the current cwd. Run this after /clear when you want context back. There is no SessionStart auto-restore hook — restoration is always explicit.
 ---
 
 Restore the latest /handoff brief for this cwd into the conversation.
@@ -26,5 +26,5 @@ Run these steps:
    `Restored: <session_id> from <ts>, <N> agent reports, <N> decisions`
 
 This command is idempotent — invoking it twice loads the same brief
-twice. Unlike the SessionStart hook, it does NOT consume the symlink,
-so you can re-run `/handon` if your context resets again.
+twice. It does not consume or rename the symlink, so you can re-run
+`/handon` whenever context resets again.

@@ -34,8 +34,8 @@ PreCompact hook (manual + auto)
                       └──▶ ~/.claude/compaction/<session>.md  (trimmed brief)
                                                   ▲
                                                   │
-                                  SessionStart(matcher: compact)
-                                          stdout → injected into resumed context
+                                          /handon (explicit)
+                                          Read tool → injected into context
 ```
 
 User-facing flow:
@@ -49,7 +49,7 @@ prints brief path + memory doc hash
    ↓
 user runs /clear
    ↓
-SessionStart(compact) hook auto-injects brief into next message
+user runs /handon → loads brief into the new session
 ```
 
 ## Install
@@ -72,16 +72,13 @@ Run `/handoff` when the context starts filling. It:
 3. Auto-stores any sub-agent reports as memory entries
 4. Re-arms `latest-<cwd_slug>.md` symlink for explicit restore
 
-Then either:
-
-- Run `/clear` for a fresh slate (default — no auto-restore), then `/handon`
-  when you want the brief back. Recommended.
-- Run `claude -c` from the same cwd → SessionStart `resume` matcher injects
-  the brief once and consumes the symlink.
+Then run `/clear` for a fresh slate, and `/handon` when you want the brief
+back. Restoration is always explicit — there is no SessionStart hook that
+auto-injects context.
 
 `/handon` reads the latest brief for the current cwd via the Read tool. It's
-idempotent (re-runnable) and never auto-consumes — use it whenever you want
-to re-anchor.
+idempotent (re-runnable) and never consumes the symlink — use it whenever
+you want to re-anchor.
 
 If the trimmer dropped something you actually needed, recall the full archive:
 `memory doc get <hash>`.
@@ -97,8 +94,9 @@ huge.jsonl      14 MB   618 KB       4.24% 392/392           64        233    41
 xhuge.jsonl     83 MB   2.6 MB       3.03% 911/911          154       1146   206    5
 ```
 
-`xhuge` exceeds the SessionStart 25 KB inject budget by 100×; the head is
-auto-injected by the hook, full brief stays on disk for `Read`.
+`xhuge` produces a 2.6 MB tier1 brief; `/handon` reads only the first
+25 KB (`CLAUDE_COMPACTION_MAX_BYTES`), full brief stays on disk for an
+explicit `Read` if you need more.
 
 Reproduce: `PYTHONPATH=. python3 scripts/bench.py`
 
@@ -126,8 +124,9 @@ bug — the trimmer dropped user intent.
 - Replace the built-in summarizer prompt — only the API SDK exposes
   `instructions` on the compaction beta header (`compact-2026-01-12`),
   not the CC CLI.
-- Survive a process death between PreCompact and SessionStart — relies on
-  the brief file persisting on disk (it does).
+- Auto-restore on `/clear` or `/resume` — `/handon` is always explicit by
+  design (avoids ghost-context surprises across unrelated sessions in the
+  same cwd).
 
 ## Context-fill warning
 
@@ -148,7 +147,7 @@ Hook env vars:
 - `CLAUDE_COMPACTION_ROOT` — path to this repo (default `~/repos/claude-compaction`)
 - `CLAUDE_COMPACTION_PYTHON` — python interpreter (default `python3`)
 - `CLAUDE_COMPACTION_BRIEF_DIR` — where briefs live (default `~/.claude/compaction`)
-- `CLAUDE_COMPACTION_MAX_BYTES` — SessionStart injection cap (default 25000)
+- `CLAUDE_COMPACTION_MAX_BYTES` — `/handon` Read cap (default 25000)
 - `CLAUDE_COMPACTION_CONTEXT_THRESHOLD` — context-warn fraction (default `0.70`)
 - `CLAUDE_COMPACTION_CONTEXT_WINDOW` — model context window override in tokens
   (default 200000; set to 1000000 if running Opus 4.x with the 1M extended window)

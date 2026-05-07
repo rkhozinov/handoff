@@ -1,7 +1,7 @@
 """CLI entrypoint: `cc-handoff --transcript ... --session-id ... --cwd ...`.
 
 Writes:
-  ~/.claude/compaction/<session_id>.md       — tier1 (SessionStart inject target)
+  ~/.claude/compaction/<session_id>.md       — tier1 (/handon Read target)
   ~/.claude/compaction/<session_id>-full.md  — tier2 (full trimmed conversation)
   ~/.claude/compaction/latest-<cwd_slug>.md  — symlink → tier1 (survives /clear)
 """

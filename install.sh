@@ -10,16 +10,19 @@ CC_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 echo "Installing claude-compaction from $ROOT into $CC_HOME"
 
 # 1. Make scripts executable
-chmod +x "$ROOT/hooks/precompact.sh" "$ROOT/hooks/postcompact-restore.sh" "$ROOT/hooks/context-warn.sh"
+chmod +x "$ROOT/hooks/precompact.sh" "$ROOT/hooks/context-warn.sh"
 
 # 2. Ensure target dirs exist
 mkdir -p "$CC_HOME/hooks" "$CC_HOME/commands" "$CC_HOME/compaction"
 
 # 3. Symlink hooks (force-replace if a stale symlink exists)
-for h in precompact.sh postcompact-restore.sh context-warn.sh; do
+for h in precompact.sh context-warn.sh; do
   ln -sf "$ROOT/hooks/$h" "$CC_HOME/hooks/$h"
   echo "  hook: $CC_HOME/hooks/$h -> $ROOT/hooks/$h"
 done
+
+# Clean up legacy postcompact-restore symlink (the hook is gone — /handon replaces it).
+rm -f "$CC_HOME/hooks/postcompact-restore.sh"
 
 # 4. Symlink slash commands
 for c in handoff.md handon.md; do
@@ -33,9 +36,9 @@ if [ ! -f "$SETTINGS" ]; then
   echo "{}" > "$SETTINGS"
 fi
 
-PATCHED=$(python3 - "$SETTINGS" "$CC_HOME/hooks/precompact.sh" "$CC_HOME/hooks/postcompact-restore.sh" "$CC_HOME/hooks/context-warn.sh" <<'PY'
+PATCHED=$(python3 - "$SETTINGS" "$CC_HOME/hooks/precompact.sh" "$CC_HOME/hooks/context-warn.sh" <<'PY'
 import json, sys
-path, precompact_cmd, postcompact_cmd, context_cmd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+path, precompact_cmd, context_cmd = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as f:
     data = json.load(f)
 
@@ -56,15 +59,21 @@ for matcher in ("manual", "auto"):
             "hooks": [{"type": "command", "command": precompact_cmd, "timeout": 30000}],
         })
 
-# SessionStart: matchers "compact", "clear", "resume" — all session-restart-like
-# events should attempt to restore the brief if one exists for this session_id.
-ss = hooks.setdefault("SessionStart", [])
-for matcher in ("compact", "clear", "resume"):
-    if not any(e.get("matcher") == matcher and has([e], postcompact_cmd) for e in ss):
-        ss.append({
-            "matcher": matcher,
-            "hooks": [{"type": "command", "command": postcompact_cmd, "timeout": 5000}],
-        })
+# Strip any legacy SessionStart entries that pointed at the removed
+# postcompact-restore.sh hook. /handon is now the explicit restore path.
+ss = hooks.get("SessionStart")
+if isinstance(ss, list):
+    cleaned = [
+        e for e in ss
+        if not any(
+            "postcompact-restore.sh" in (h.get("command") or "")
+            for h in e.get("hooks", [])
+        )
+    ]
+    if cleaned:
+        hooks["SessionStart"] = cleaned
+    else:
+        hooks.pop("SessionStart", None)
 
 # Stop: context-fill warning. Surfaces a one-line warning in the user's
 # transcript when context crosses CLAUDE_COMPACTION_CONTEXT_THRESHOLD
