@@ -446,3 +446,73 @@ def test_iter_signal_user_msgs_drops_dups_and_noise():
     ]
     sig = extract.iter_signal_user_msgs(entries)
     assert sig == ["fix the bug in auth.py", "no, use postgres instead"]
+
+
+# ---------- pasted-output detection / elision ----------
+
+
+def test_is_pasted_terminal_output_with_prompt_lead():
+    txt = """❯ continue
+
+  Ran 10 shell commands
+
+Status of codex/foo:
+- Pushed to origin
+- 56 commits behind master
+"""
+    assert extract.is_pasted_terminal_output(txt)
+
+
+def test_is_pasted_terminal_output_with_ran_lead_only():
+    txt = """  Ran 5 shell commands
+
+Result: ok
+- file changed
+- file changed
+"""
+    assert extract.is_pasted_terminal_output(txt)
+
+
+def test_is_pasted_terminal_output_rejects_prose():
+    txt = (
+        "We need to deploy the wc3 platform to GKE. There are several\n"
+        "moving parts: keycloak, kafka, the API, and the frontend."
+    )
+    assert not extract.is_pasted_terminal_output(txt)
+
+
+def test_is_pasted_terminal_output_lead_alone_is_not_enough():
+    # Just `❯` with no follow-on status lines should not count.
+    txt = "❯ what about this command?"
+    assert not extract.is_pasted_terminal_output(txt)
+
+
+def test_elide_pasted_output_preserves_head():
+    head = "deploy wc3 to gke. status check: " * 4  # well over 200 chars
+    body = """\n❯ continue\n  Ran 10 shell commands\nStatus of branch:\n- pushed\n- behind\n- no PR\n""" * 50
+    txt = head + body
+    out = extract.elide_pasted_output(txt)
+    # Head substring should still be present
+    assert out.startswith(head[:50])
+    # Marker present
+    assert "[elided" in out
+    assert "of pasted terminal output" in out
+    # Output is much smaller than input
+    assert len(out) < len(txt) // 4
+
+
+def test_elide_pasted_output_pass_through_when_not_pasted():
+    txt = "I want to refactor the auth module."
+    assert extract.elide_pasted_output(txt) == txt
+
+
+def test_iter_signal_user_msgs_elides_pasted_output():
+    pasted = "❯ continue\n  Ran 10 shell commands\nStatus:\n- a\n- b\n- c\n" * 100
+    real = "fix the auth bug"
+    entries = [_user_str(pasted), _user_str(real)]
+    sig = extract.iter_signal_user_msgs(entries)
+    assert len(sig) == 2
+    elided = sig[0] if "[elided" in sig[0] else sig[1]
+    assert "[elided" in elided
+    # Original would be huge; elided should be small
+    assert len(elided) < 1000

@@ -87,6 +87,49 @@ SYSTEM_INJECTED_PREFIXES = (
     "<system-reminder>",
 )
 
+# Heuristic: a user msg that's mostly a paste of CLI output. Real intent
+# usually leads, then drowns in a wall of `❯ …` / `Ran NN shell commands` /
+# `Status:`-style status dumps. Don't drop entirely (keeps signal), but
+# elide the long tail so a fresh /handoff doesn't carry forward 50 KB of
+# someone else's terminal scroll.
+PASTED_OUTPUT_LEAD = re.compile(r"(?m)(?:^❯ |Ran\s+\d+\s+shell commands\b)")
+PASTED_OUTPUT_LINE = re.compile(
+    r"(?m)^(?:[A-Za-z][\w-]+:\s|-\s|\s*\d+\.\s|❯\s|\s*Ran\s+\d+\s+shell)"
+)
+PASTED_PRESERVE_CHARS = 200
+
+
+def is_pasted_terminal_output(text: str) -> bool:
+    """True when `text` looks like a paste of CC's terminal output.
+
+    Two-stage signal: a clear lead pattern (a `❯ ` line or a
+    `Ran N shell commands`), AND at least 3 status-shaped lines after the
+    lead. Bare command output without a lead does not match — we want
+    high precision so genuine prose isn't elided.
+    """
+    if not text:
+        return False
+    if not PASTED_OUTPUT_LEAD.search(text):
+        return False
+    return len(PASTED_OUTPUT_LINE.findall(text)) >= 3
+
+
+def elide_pasted_output(text: str, preserve_chars: int = PASTED_PRESERVE_CHARS) -> str:
+    """Return `text` with the pasted-output tail collapsed to a marker.
+
+    Only triggers for inputs `is_pasted_terminal_output` recognizes, and
+    only when the elision would actually save bytes. Keeps the first
+    `preserve_chars` characters intact so the user's leading intent
+    survives.
+    """
+    if not is_pasted_terminal_output(text):
+        return text
+    head = text[:preserve_chars].rstrip()
+    elided = len(text) - len(head)
+    if elided <= 0:
+        return text
+    return f"{head}\n…[elided {elided // 1000}k of pasted terminal output]"
+
 
 def load_jsonl(path: str) -> list[dict]:
     out: list[dict] = []
@@ -213,7 +256,10 @@ def is_noise_user_msg(text: str) -> bool:
 
 def iter_signal_user_msgs(entries: Iterable[dict]) -> list[str]:
     """Real user msgs minus noise (short acks, skill bodies, compaction
-    continuations) and exact duplicates. Order = first occurrence."""
+    continuations) and exact duplicates. Order = first occurrence.
+
+    Pasted terminal-output blocks are kept (the lead carries intent) but
+    the long tail is elided so the brief stays compact."""
     seen: dict[str, None] = {}
     for e in entries:
         if not is_real_user(e):
@@ -221,6 +267,7 @@ def iter_signal_user_msgs(entries: Iterable[dict]) -> list[str]:
         t = user_text(e)
         if not t or is_noise_user_msg(t):
             continue
+        t = elide_pasted_output(t)
         if t in seen:
             continue
         seen[t] = None

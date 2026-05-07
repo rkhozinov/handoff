@@ -35,6 +35,8 @@ from compaction.extract import (
     SUBAGENT_TOOL_NAMES,
     assistant_blocks,
     extract_agent_reports,
+    DROP_TOP_TYPES,
+    elide_pasted_output,
     extract_code_anchors,
     extract_decisions,
     extract_errors,
@@ -58,13 +60,20 @@ NARRATION_RE = re.compile(
 # Tier-1 budget. /handon Read caps at 25 KB; leave headroom.
 TIER1_BUDGET_BYTES = 20_000
 
+# Per-turn assistant text cap in tier2. Prevents one giant turn (e.g. a
+# long `Recommendation` block) from dominating the brief. Whole reasoning
+# stays in the memory doc archive; tier2 keeps a head + tail marker.
+ASSISTANT_TURN_MAX_CHARS = 4_000
+
 
 def _classify_assistant(
     entry: dict,
     seen_paths: set[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Return (joined_text, tool_markers) split out of the entry's blocks.
-    Thinking blocks are silently dropped here."""
+    Thinking blocks are silently dropped here. Per-turn text exceeding
+    ASSISTANT_TURN_MAX_CHARS is truncated with a marker so the full body
+    stays in the memory doc archive but tier2 doesn't bloat."""
     text_parts: list[str] = []
     tool_markers: list[str] = []
     for b in assistant_blocks(entry):
@@ -79,7 +88,14 @@ def _classify_assistant(
                     b.get("name", "?"), b.get("input", {}) or {}, seen_paths=seen_paths
                 )
             )
-    return ("\n".join(text_parts).strip(), tool_markers)
+    joined = "\n".join(text_parts).strip()
+    if len(joined) > ASSISTANT_TURN_MAX_CHARS:
+        elided = len(joined) - ASSISTANT_TURN_MAX_CHARS
+        joined = (
+            joined[:ASSISTANT_TURN_MAX_CHARS].rstrip()
+            + f"\n…[elided {elided // 1000}k of assistant text — full body in memory doc]"
+        )
+    return (joined, tool_markers)
 
 
 SHORT_ACK_REPLY_RE = re.compile(
@@ -366,9 +382,15 @@ def render_brief(
     convo: list[tuple[str, str]] = []
     for i, e in enumerate(entries):
         nxt = entries[i + 1] if i + 1 < len(entries) else None
+        if e.get("type") in DROP_TOP_TYPES:
+            # file-history-snapshot, attachments, etc. — never in the brief.
+            continue
         if is_real_user(e):
             t = user_text(e)
-            if not t or is_noise_user_msg(t) or t in seen_user:
+            if not t or is_noise_user_msg(t):
+                continue
+            t = elide_pasted_output(t)
+            if t in seen_user:
                 continue
             seen_user.add(t)
             convo.append(("user", t))

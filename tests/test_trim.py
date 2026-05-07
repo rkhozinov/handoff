@@ -313,3 +313,35 @@ def test_render_brief_signal_user_msgs_verbatim():
     from compaction.extract import iter_signal_user_msgs
     for m in iter_signal_user_msgs(entries):
         assert m in brief, f"signal user msg lost: {m!r}"
+
+
+def test_render_assistant_caps_long_text():
+    """A single very long assistant text turn should be truncated with a marker
+    so tier2 doesn't carry 6+ KB of one reasoning block."""
+    long_text = "x" * 10_000
+    e = _a([{"type": "text", "text": long_text}])
+    out = render_assistant(e)
+    assert out is not None
+    # Cap is 4_000 chars; output should be smaller than input plus marker.
+    assert len(out) < 5_000
+    assert "[elided" in out
+    assert "memory doc" in out
+
+
+def test_render_assistant_short_text_not_capped():
+    e = _a([{"type": "text", "text": "Short substantive analysis result."}])
+    out = render_assistant(e)
+    assert out == "Short substantive analysis result."
+
+
+def test_render_brief_drops_file_history_snapshot():
+    """File-history-snapshot entries must not appear in tier2 (they bloat
+    without adding signal — git already records this)."""
+    entries = [
+        _u("real user msg about deploying"),
+        {"type": "file-history-snapshot", "snapshot": "x" * 5000},
+        _a([{"type": "text", "text": "Sure, let me check git status."}]),
+    ]
+    tier1, tier2 = render_brief(entries, session_id="s", cwd="/c", archive_hash="h")
+    # The snapshot blob should not leak into tier2.
+    assert "x" * 50 not in tier2
