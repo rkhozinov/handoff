@@ -32,6 +32,8 @@ PRINTABLE_TOOL_INPUT_KEYS = {
     "WebSearch": ("query",),
     "TaskCreate": ("subject",),
     "TaskUpdate": ("taskId", "status"),
+    # Clarifying question to the user — the question text IS the signal.
+    "AskUserQuestion": ("question",),
     # Sub-agent dispatch — show what was researched, not just `[Agent]`.
     "Agent": ("description", "subagent_type"),
     "Task": ("description", "subagent_type"),

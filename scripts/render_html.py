@@ -135,6 +135,32 @@ code { background: #161b22; padding: 2px 6px; border-radius: 3px; font-family: '
 .sample-selector select:hover { border-color: #58a6ff; }
 .sample-pane { display: none; }
 .sample-pane.active { display: block; }
+
+/* Flag-and-review: click any .turn to mark it as weird, copy via toolbar */
+.turn { cursor: pointer; transition: outline 0.1s; }
+.turn--flagged {
+  outline: 2px solid #f0883e;
+  box-shadow: 0 0 0 4px rgba(240, 136, 62, 0.25);
+  position: relative;
+}
+.turn--flagged::after {
+  content: "⚑ flagged"; position: absolute; top: 6px; right: 8px;
+  font-size: 0.65em; color: #f0883e; font-weight: 700;
+  letter-spacing: 0.5px; pointer-events: none;
+}
+.flag-toolbar {
+  position: fixed; bottom: 20px; right: 20px; z-index: 1000;
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 12px 16px; display: none; gap: 12px; align-items: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+.flag-toolbar.visible { display: flex; }
+.flag-toolbar .count { font-weight: 700; color: #f0883e; }
+.flag-toolbar button {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 0.9em;
+}
+.flag-toolbar button:hover { border-color: #58a6ff; color: #58a6ff; }
 """
 
 
@@ -494,6 +520,100 @@ def main() -> int:
     left.addEventListener("scroll", mirror(left, right));
     right.addEventListener("scroll", mirror(right, left));
   });
+})();
+(function () {
+  // Flag-and-review: click any .turn to mark it as weird. Toolbar at
+  // bottom-right shows count + Copy JSON / Clear buttons. State persists
+  // across reloads via localStorage so a long review session survives
+  // regeneration. Key includes fixture + side + idx + (optional)
+  // selection start so duplicates inside same fixture are distinct.
+  var STORAGE_KEY = "compaction.reportFlags.v1";
+  var flags = {};
+  try { flags = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (e) {}
+
+  var bar = document.createElement("div");
+  bar.className = "flag-toolbar";
+  bar.innerHTML = (
+    '<span class="count">0 flagged</span>' +
+    '<button data-action="copy">Copy JSON</button>' +
+    '<button data-action="clear">Clear</button>'
+  );
+  document.body.appendChild(bar);
+
+  function fixtureOf(turn) {
+    var pane = turn.closest(".sample-pane");
+    return pane ? pane.dataset.fixture || "?" : "?";
+  }
+  function sideOf(turn) {
+    var col = turn.closest(".diff-col");
+    if (!col) return "brief";
+    var siblings = col.parentElement.querySelectorAll(".diff-col");
+    return siblings[0] === col ? "raw" : "trimmed";
+  }
+  function keyOf(turn) {
+    return [
+      fixtureOf(turn), sideOf(turn), turn.dataset.idx || "?",
+    ].join("|");
+  }
+  function refresh() {
+    var keys = Object.keys(flags);
+    document.querySelectorAll(".turn").forEach(function (t) {
+      t.classList.toggle("turn--flagged", flags[keyOf(t)] === true);
+    });
+    bar.querySelector(".count").textContent =
+      keys.length + (keys.length === 1 ? " flagged" : " flagged");
+    bar.classList.toggle("visible", keys.length > 0);
+  }
+  function persist() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(flags)); } catch (e) {}
+  }
+  function turnPayload(turn) {
+    var label = (turn.querySelector(".turn-label") || {}).textContent || "";
+    var body = (turn.querySelector(".pre") || {}).textContent || "";
+    return {
+      fixture: fixtureOf(turn),
+      side: sideOf(turn),
+      idx: turn.dataset.idx,
+      label: label.trim(),
+      body: body.trim(),
+    };
+  }
+
+  document.addEventListener("click", function (e) {
+    // Ignore clicks on the toolbar buttons themselves.
+    if (e.target.closest(".flag-toolbar")) return;
+    var turn = e.target.closest(".turn");
+    if (!turn) return;
+    var k = keyOf(turn);
+    if (flags[k]) delete flags[k]; else flags[k] = true;
+    persist();
+    refresh();
+  });
+
+  bar.addEventListener("click", function (e) {
+    var act = (e.target.dataset || {}).action;
+    if (act === "copy") {
+      var rows = [];
+      document.querySelectorAll(".turn--flagged").forEach(function (t) {
+        rows.push(turnPayload(t));
+      });
+      var json = JSON.stringify(rows, null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(json);
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = json; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } catch (err) {}
+        document.body.removeChild(ta);
+      }
+      e.target.textContent = "Copied!";
+      setTimeout(function () { e.target.textContent = "Copy JSON"; }, 1200);
+    } else if (act === "clear") {
+      flags = {}; persist(); refresh();
+    }
+  });
+
+  refresh();
 })();
 </script>
 """
