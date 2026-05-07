@@ -1,0 +1,458 @@
+#!/usr/bin/env python3
+"""Generate a standalone HTML presentation showing raw vs trimmed.
+
+Output: docs/report.html (no external deps, single file).
+"""
+from __future__ import annotations
+
+import argparse
+import html
+import json
+from pathlib import Path
+
+from compaction.extract import (
+    assistant_blocks,
+    extract_code_anchors,
+    extract_decisions,
+    extract_errors,
+    extract_files_touched,
+    is_real_user,
+    iter_real_user_msgs,
+    iter_signal_user_msgs,
+    load_jsonl,
+    user_text,
+)
+from compaction.trim import _classify_assistant, render_assistant, render_brief
+
+ROOT = Path(__file__).resolve().parent.parent
+
+CSS = """
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+  background: #0d1117; color: #e6edf3; margin: 0; padding: 0;
+  line-height: 1.5;
+}
+header {
+  background: linear-gradient(135deg, #1f6feb 0%, #6e40c9 100%);
+  padding: 60px 40px; text-align: center;
+}
+header h1 { margin: 0; font-size: 2.5em; font-weight: 700; }
+header .tagline { font-size: 1.2em; opacity: 0.9; margin-top: 10px; }
+.container { max-width: 1400px; margin: 0 auto; padding: 40px; }
+section { margin-bottom: 60px; }
+section h2 {
+  font-size: 1.8em; border-bottom: 2px solid #30363d; padding-bottom: 10px;
+  margin-bottom: 20px;
+}
+.hero-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 30px 0; }
+.stat-card {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 24px; text-align: center;
+}
+.stat-card .num { font-size: 2.4em; font-weight: 700; color: #58a6ff; display: block; }
+.stat-card .label { color: #8b949e; font-size: 0.9em; margin-top: 4px; }
+
+table { width: 100%; border-collapse: collapse; background: #161b22; border-radius: 8px; overflow: hidden; }
+table th, table td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #30363d; }
+table th { background: #21262d; font-weight: 600; color: #8b949e; }
+table tr:last-child td { border-bottom: none; }
+table tr:hover { background: #1c2128; }
+.bar { display: inline-block; height: 14px; background: #58a6ff; border-radius: 3px; vertical-align: middle; }
+.bar-bg { display: inline-block; width: 100px; background: #30363d; border-radius: 3px; vertical-align: middle; margin-right: 8px; }
+.invariant-good { color: #3fb950; font-weight: 600; }
+.ratio { font-weight: 600; color: #f0883e; }
+
+.diff-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  margin-top: 20px;
+}
+.diff-col {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 20px; max-height: 600px; overflow-y: auto;
+  font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.85em;
+}
+.diff-col h3 {
+  margin-top: 0; padding-bottom: 10px; border-bottom: 1px solid #30363d;
+  font-family: -apple-system, system-ui, sans-serif; font-size: 1em;
+}
+.turn { margin-bottom: 16px; padding: 10px; border-radius: 4px; }
+.turn-user { background: rgba(31, 111, 235, 0.15); border-left: 3px solid #1f6feb; }
+.turn-assistant { background: rgba(63, 185, 113, 0.1); border-left: 3px solid #3fb950; }
+.turn-tool-result { background: rgba(248, 81, 73, 0.08); border-left: 3px solid #f85149; opacity: 0.6; }
+.turn-thinking { background: rgba(139, 148, 158, 0.1); border-left: 3px solid #8b949e; opacity: 0.5; }
+.turn-tool-use { background: rgba(240, 136, 62, 0.1); border-left: 3px solid #f0883e; }
+.turn-meta { background: rgba(139, 148, 158, 0.05); border-left: 3px solid #6e7681; opacity: 0.4; font-size: 0.8em; }
+.turn-label {
+  display: inline-block; font-size: 0.7em; font-weight: 600;
+  padding: 2px 8px; border-radius: 3px; margin-bottom: 6px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.label-user { background: #1f6feb; color: white; }
+.label-assistant { background: #3fb950; color: #0d1117; }
+.label-tool-result { background: #f85149; color: white; }
+.label-thinking { background: #8b949e; color: #0d1117; }
+.label-tool-use { background: #f0883e; color: #0d1117; }
+.label-meta { background: #6e7681; color: white; }
+.dropped { text-decoration: line-through; opacity: 0.4; }
+.pre {
+  white-space: pre-wrap; word-break: break-word; margin: 0;
+  font-family: inherit;
+}
+.legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0; font-size: 0.85em; }
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-dot { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.brief-preview {
+  background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+  padding: 24px; max-height: 600px; overflow-y: auto;
+  font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.85em;
+  white-space: pre-wrap;
+}
+.brief-preview h1 { color: #58a6ff; font-size: 1.4em; margin-top: 0; }
+.brief-preview h2 { color: #f0883e; font-size: 1.1em; margin-top: 1.2em; padding-bottom: 4px; border-bottom: 1px solid #30363d; font-family: 'SF Mono', monospace; }
+.flow-diagram {
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 30px; font-family: 'SF Mono', monospace; white-space: pre;
+  overflow-x: auto; line-height: 1.4; color: #c9d1d9;
+}
+footer { text-align: center; padding: 40px; color: #8b949e; border-top: 1px solid #30363d; }
+code { background: #161b22; padding: 2px 6px; border-radius: 3px; font-family: 'SF Mono', monospace; font-size: 0.9em; }
+"""
+
+
+def truncate(s: str, n: int = 600) -> str:
+    s = s.strip()
+    if len(s) <= n:
+        return s
+    return s[: n - 20].rstrip() + f"\n[…+{len(s) - n + 20:,} chars truncated]"
+
+
+def block_text_summary(b: dict) -> str:
+    bt = b.get("type")
+    if bt == "text":
+        return truncate(b.get("text", ""))
+    if bt == "tool_use":
+        name = b.get("name", "?")
+        inp = b.get("input", {})
+        return f"[{name}] " + truncate(json.dumps(inp, ensure_ascii=False), 400)
+    if bt == "tool_result":
+        c = b.get("content", "")
+        if isinstance(c, list):
+            c = " ".join(blk.get("text", "") for blk in c if isinstance(blk, dict))
+        return truncate(str(c), 800)
+    if bt == "thinking":
+        return truncate(b.get("thinking", ""))
+    return truncate(json.dumps(b)[:200])
+
+
+def render_raw_turn(entry: dict) -> tuple[str, str, str]:
+    """Returns (kind, label, body_html) for a transcript entry."""
+    t = entry.get("type")
+    if t == "user":
+        if is_real_user(entry):
+            return ("user", "USER", html.escape(truncate(user_text(entry))))
+        msg = entry.get("message", {})
+        c = msg.get("content")
+        if isinstance(c, list):
+            parts = []
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    parts.append(block_text_summary(b))
+            return ("tool-result", "TOOL_RESULT (dropped)", html.escape("\n".join(parts)))
+        return ("meta", "USER (other)", html.escape(json.dumps(c)[:200]))
+    if t == "assistant":
+        blocks = assistant_blocks(entry)
+        out = []
+        kinds = []
+        for b in blocks:
+            bt = b.get("type")
+            kinds.append(bt)
+            out.append(block_text_summary(b))
+        non_think = [k for k in kinds if k != "thinking"]
+        primary = non_think[0] if non_think else (kinds[0] if kinds else "?")
+        if primary == "tool_use":
+            return ("tool-use", "ASSISTANT (tool_use)", html.escape("\n".join(out)))
+        if primary == "thinking":
+            return ("thinking", "ASSISTANT (thinking, dropped)", html.escape("\n".join(out)))
+        return ("assistant", "ASSISTANT", html.escape("\n".join(out)))
+    return ("meta", f"META: {t}", html.escape(json.dumps(entry)[:200]))
+
+
+def render_trimmed_turn(entry: dict, next_entry: dict | None) -> tuple[str, str, str] | None:
+    if is_real_user(entry):
+        return ("user", "USER", html.escape(truncate(user_text(entry))))
+    if entry.get("type") == "assistant":
+        text_joined, tool_markers = _classify_assistant(entry)
+        rendered = render_assistant(entry, next_entry)
+        if rendered is None:
+            return None
+        if text_joined and tool_markers:
+            return ("assistant", "ASSISTANT (text + tool marker)", html.escape(truncate(rendered)))
+        if tool_markers and not text_joined:
+            return ("tool-use", "ASSISTANT (tool marker only)", html.escape(truncate(rendered)))
+        return ("assistant", "ASSISTANT", html.escape(truncate(rendered)))
+    return None
+
+
+def build_diff_html(entries: list[dict], max_turns: int = 60) -> str:
+    raw_html: list[str] = []
+    trim_html: list[str] = []
+
+    interesting = [e for e in entries if e.get("type") in ("user", "assistant")][:max_turns]
+
+    for i, e in enumerate(interesting):
+        nxt = interesting[i + 1] if i + 1 < len(interesting) else None
+        kind, label, body = render_raw_turn(e)
+        raw_html.append(
+            f'<div class="turn turn-{kind}">'
+            f'<span class="turn-label label-{kind}">{html.escape(label)}</span>'
+            f'<pre class="pre">{body}</pre></div>'
+        )
+
+        trimmed = render_trimmed_turn(e, nxt)
+        if trimmed is None:
+            trim_html.append(
+                f'<div class="turn turn-{kind}" style="opacity:0.25;">'
+                f'<span class="turn-label label-{kind}">DROPPED ({html.escape(label)})</span>'
+                f'<pre class="pre dropped">{body}</pre></div>'
+            )
+        else:
+            tk, tl, tb = trimmed
+            trim_html.append(
+                f'<div class="turn turn-{tk}">'
+                f'<span class="turn-label label-{tk}">{html.escape(tl)}</span>'
+                f'<pre class="pre">{tb}</pre></div>'
+            )
+
+    return (
+        '<div class="diff-grid">'
+        f'<div class="diff-col"><h3>RAW transcript ({len(interesting)} turns shown)</h3>{"".join(raw_html)}</div>'
+        f'<div class="diff-col"><h3>TRIMMED brief</h3>{"".join(trim_html)}</div>'
+        '</div>'
+    )
+
+
+def stat_row(label: str, path: Path) -> dict:
+    raw = path.read_bytes()
+    entries = load_jsonl(str(path))
+    all_user = iter_real_user_msgs(entries)
+    signal_user = iter_signal_user_msgs(entries)
+    tier1, tier2 = render_brief(entries, label, "/bench", archive_hash=None)
+    return {
+        "fixture": path.name,
+        "lines": sum(1 for _ in path.open("rb")),
+        "raw_bytes": len(raw),
+        "user_total": len(all_user),
+        "user_signal": len(signal_user),
+        "tier1_bytes": len(tier1.encode()),
+        "tier2_bytes": len(tier2.encode()),
+        "ratio_pct": 100 * (len(tier1.encode()) + len(tier2.encode())) / max(1, len(raw)),
+        "decisions": len(extract_decisions(signal_user)),
+        "files": len(extract_files_touched(entries)),
+        "code": len(extract_code_anchors(entries)),
+        "errors": len(extract_errors(entries)),
+    }
+
+
+def fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def render_stats_table(rows: list[dict]) -> str:
+    out = ['<table><thead><tr>',
+           '<th>fixture</th><th>lines</th><th>raw</th><th>user msgs (signal/total)</th>',
+           '<th>tier1 (≤25KB inject)</th><th>tier2 (full)</th><th>signal</th>',
+           '</tr></thead><tbody>']
+    max_raw = max(r["raw_bytes"] for r in rows)
+    for r in rows:
+        bar1_w = max(2, int(100 * r["tier1_bytes"] / max_raw))
+        bar2_w = max(2, int(100 * r["tier2_bytes"] / max_raw))
+        signal = (
+            f"{r['decisions']} decisions · {r['files']} files · "
+            f"{r['code']} code · {r['errors']} errors"
+        )
+        noise_pct = 100 * (r["user_total"] - r["user_signal"]) / max(1, r["user_total"])
+        fits = "✓" if r["tier1_bytes"] <= 25_000 else "✗"
+        fits_color = "#3fb950" if r["tier1_bytes"] <= 25_000 else "#f85149"
+        out.append(
+            f'<tr><td><code>{html.escape(r["fixture"])}</code></td>'
+            f'<td>{r["lines"]:,}</td>'
+            f'<td>{fmt_bytes(r["raw_bytes"])}</td>'
+            f'<td><span class="invariant-good">{r["user_signal"]}/{r["user_signal"]}</span> '
+            f'<span style="color:#8b949e">of {r["user_total"]} ({noise_pct:.0f}% noise)</span></td>'
+            f'<td><span class="bar-bg"><span class="bar" style="width:{bar1_w}px"></span></span> '
+            f'{fmt_bytes(r["tier1_bytes"])} <span style="color:{fits_color};font-weight:600">{fits}</span></td>'
+            f'<td><span class="bar-bg"><span class="bar" style="width:{bar2_w}px;background:#3fb950"></span></span> '
+            f'{fmt_bytes(r["tier2_bytes"])}</td>'
+            f'<td>{signal}</td></tr>'
+        )
+    out.append('</tbody></table>')
+    return "".join(out)
+
+
+def render_brief_html(entries: list[dict], label: str) -> str:
+    tier1, _ = render_brief(entries, label, "/demo", archive_hash="abcd1234ef56...", tier2_path="/demo/session-full.md")
+    escaped = html.escape(tier1)
+    escaped = escaped.replace("# Session Brief", '<h1># Session Brief</h1>', 1)
+    import re as _re
+    # Match section headers (allow trailing parenthetical info like "(123)"):
+    escaped = _re.sub(r"^## (.+)$", r"<h2>## \1</h2>", escaped, flags=_re.MULTILINE)
+    return f'<div class="brief-preview">{escaped[:8000]}{"..." if len(escaped) > 8000 else ""}</div>'
+
+
+def hero_metrics(rows: list[dict]) -> str:
+    total_raw = sum(r["raw_bytes"] for r in rows)
+    total_tier1 = sum(r["tier1_bytes"] for r in rows)
+    total_tier2 = sum(r["tier2_bytes"] for r in rows)
+    total_signal = sum(r["user_signal"] for r in rows)
+    total_user = sum(r["user_total"] for r in rows)
+    noise_dropped = total_user - total_signal
+    fits_count = sum(1 for r in rows if r["tier1_bytes"] <= 25_000)
+    return f"""
+    <div class="hero-stats">
+      <div class="stat-card"><span class="num">{fmt_bytes(total_raw)}</span><span class="label">raw input across {len(rows)} fixtures</span></div>
+      <div class="stat-card"><span class="num">{fmt_bytes(total_tier1)}</span><span class="label">tier1 total (SessionStart inject)</span></div>
+      <div class="stat-card"><span class="num invariant-good">{fits_count}/{len(rows)}</span><span class="label">fixtures with tier1 ≤ 25 KB inject cap</span></div>
+      <div class="stat-card"><span class="num invariant-good">{total_signal}/{total_signal}</span><span class="label">signal user msgs preserved (of {total_user}; {noise_dropped} noise filtered)</span></div>
+    </div>
+    """
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fixtures", default=str(ROOT / "tests" / "fixtures" / "raw"))
+    ap.add_argument("--out", default=str(ROOT / "docs" / "report.html"))
+    args = ap.parse_args()
+
+    fdir = Path(args.fixtures)
+    if not (fdir.is_dir() and any(fdir.glob("*.jsonl"))):
+        fdir = ROOT / "tests" / "fixtures" / "scrubbed"
+
+    fixtures = sorted(fdir.glob("*.jsonl"))
+    if not fixtures:
+        print("no fixtures available")
+        return 1
+
+    rows = [stat_row(f.stem, f) for f in fixtures]
+
+    small_path = next((f for f in fixtures if f.stem == "small"), fixtures[0])
+    small_entries = load_jsonl(str(small_path))
+
+    diff_html = build_diff_html(small_entries, max_turns=40)
+    brief_html = render_brief_html(small_entries, small_path.stem)
+
+    flow = """    [User: long session, ~70% context]
+                  │
+                  ▼
+                /handoff
+                  │
+                  ▼
+    ┌─────────────────────────────────────┐
+    │      cc-handoff CLI (Python)        │
+    │   compaction.cli → compaction.trim  │
+    └────────┬───────────────────┬────────┘
+             │                   │
+             ▼                   ▼
+     memory doc store     ~/.claude/compaction/
+       (full transcript    <session_id>.md
+        recoverable)         (trimmed brief)
+                                 ▲
+                                 │
+            User runs /clear     │ stdout
+                                 │
+              SessionStart hook (matcher: "compact")
+                  injects brief into resumed context"""
+
+    legend = """
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#1f6feb"></span> real user message</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#3fb950"></span> assistant text</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#f0883e"></span> tool_use (collapsed to marker)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#f85149"></span> tool_result (dropped)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#8b949e"></span> thinking (dropped)</span>
+    </div>
+    """
+
+    html_doc = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>claude-compaction · raw vs trimmed</title>
+<style>{CSS}</style>
+</head>
+<body>
+<header>
+  <h1>claude-compaction</h1>
+  <div class="tagline">Replacing Claude Code's lossy <code>/compact</code> with deterministic trim + memory archive · <code>/handoff</code></div>
+</header>
+
+<div class="container">
+
+<section>
+  <h2>The problem</h2>
+  <p>Default <code>/compact</code> runs an LLM summarizer over the entire session.
+  It paraphrases code, forgets file paths, drops direction reversals, and ignores
+  user-supplied "preserve X, Y" hints &mdash; those hints are appended as context,
+  not used as summarizer instructions. The summarizer prompt is fixed and not
+  exposed in the Claude Code CLI.</p>
+  <p>Real signal in a session is concentrated in user messages, code blocks,
+  file paths, and decisions. Real noise is in tool_result bodies and procedural
+  narration ("let me check", "reading the file"). A deterministic trimmer keeps
+  the signal verbatim and drops the noise without any LLM call.</p>
+</section>
+
+<section>
+  <h2>Bottom line</h2>
+  {hero_metrics(rows)}
+  <p style="color:#8b949e">Drops <code>tool_result</code> bodies, <code>thinking</code> blocks, and procedural narration adjacent to tool calls. Every real user message survives verbatim — verified as a hard test invariant.</p>
+</section>
+
+<section>
+  <h2>Per-fixture stats (real transcripts)</h2>
+  {render_stats_table(rows)}
+  <p style="color:#8b949e;margin-top:12px">Bars scaled to the largest fixture's raw size.</p>
+</section>
+
+<section>
+  <h2>Side-by-side: raw vs trimmed</h2>
+  <p>Sample from <code>{html.escape(small_path.name)}</code>. Left: every entry in the raw transcript (truncated at 600 chars per block). Right: what the trimmer keeps. Dropped entries shown faded.</p>
+  {legend}
+  {diff_html}
+</section>
+
+<section>
+  <h2>Generated brief structure</h2>
+  <p>This is what gets written to <code>~/.claude/compaction/&lt;session_id&gt;.md</code>
+  and (head) auto-injected by the SessionStart hook on the next message after <code>/clear</code>:</p>
+  {brief_html}
+</section>
+
+<section>
+  <h2>Architecture</h2>
+  <div class="flow-diagram">{html.escape(flow)}</div>
+</section>
+
+</div>
+
+<footer>
+  <p>tests · real fixtures · zero LLM calls in the trim path.</p>
+  <p><code>~/repos/claude-compaction</code></p>
+</footer>
+
+</body>
+</html>
+"""
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html_doc, encoding="utf-8")
+    print(f"wrote {out_path} ({out_path.stat().st_size // 1024} KB)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

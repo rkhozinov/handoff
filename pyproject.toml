@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-compaction"
+version = "0.1.0"
+description = "Deterministic transcript trimmer + memory archive replacing Claude Code's lossy default /compact"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+cc-handoff = "compaction.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["compaction"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

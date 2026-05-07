@@ -1,0 +1,25 @@
+# Real session transcripts (PII/keys risk)
+tests/fixtures/raw/
+# Even the "scrubbed" copies still contain prose-level identifiers
+# (company names, internal hostnames, Linear keys, customer references)
+# that the regex scrubber can't reliably strip. Keep local-only.
+tests/fixtures/scrubbed/
+
+# Auto-generated diff visualisation (built from real fixtures → prose leak risk)
+docs/report.html
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
