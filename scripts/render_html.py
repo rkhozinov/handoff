@@ -447,10 +447,10 @@ def main() -> int:
 })();
 (function () {
   // Mirror scroll between the raw and trimmed columns of each diff pane.
-  // The two columns can have very different total heights (raw has all
-  // turns, trimmed has fewer + faded drops), so we sync the *proportion*
-  // scrolled rather than the raw scrollTop. A re-entrancy flag prevents
-  // the mirrored scroll from triggering its own handler in a feedback loop.
+  // INVERTED on purpose: when one column scrolls down, its sibling scrolls
+  // *up* by the same proportion. Quirky-by-design — surfaces the contrast
+  // between what was kept (top of trimmed) and what was dropped (top of raw)
+  // in the same eyeline. Re-entrancy flag prevents feedback loop.
   document.querySelectorAll(".diff-grid").forEach(function (grid) {
     var cols = grid.querySelectorAll(".diff-col");
     if (cols.length !== 2) return;
@@ -463,8 +463,8 @@ def main() -> int:
         var dstMax = dst.scrollHeight - dst.clientHeight;
         if (srcMax <= 0 || dstMax <= 0) return;
         syncing = true;
-        dst.scrollTop = (src.scrollTop / srcMax) * dstMax;
-        // Release the flag after the mirrored scroll's own event has fired.
+        // Reversed: dst goes the OPPOSITE way of src.
+        dst.scrollTop = ((srcMax - src.scrollTop) / srcMax) * dstMax;
         requestAnimationFrame(function () { syncing = false; });
       };
     }
