@@ -6,6 +6,7 @@ can be unit-tested against fixture transcripts without any external state.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Iterable
 
@@ -42,8 +43,10 @@ PRINTABLE_TOOL_INPUT_KEYS = {
 }
 
 # Per-tool max value length. Bash commands are ephemeral and bloat the brief.
+# Bash limit was 40 — too tight for `git -C /long/path …` style invocations
+# where the first 40 chars were eaten by the path before the actual verb.
 TOOL_VALUE_LIMITS = {
-    "Bash": 40,
+    "Bash": 60,
     "WebFetch": 60,
     "WebSearch": 60,
 }
@@ -192,6 +195,15 @@ def assistant_blocks(entry: dict) -> list[dict]:
     return []
 
 
+def _collapse_home(s: str) -> str:
+    """Replace `$HOME` prefix with `~` so absolute paths in markers stay
+    short. Idempotent. Reads $HOME at call time so tests can mock it."""
+    home = os.environ.get("HOME") or ""
+    if home and len(home) > 1 and home in s:
+        return s.replace(home, "~")
+    return s
+
+
 def short_tool_input(
     name: str,
     inp: dict,
@@ -204,7 +216,23 @@ def short_tool_input(
     `seen_paths` tracks file paths already shown in this brief — when a
     PATH_TOOLS tool is called on a path already seen, the marker uses just
     the basename to save bytes.
+
+    Special-case AskUserQuestion: its `input` carries
+    `{"questions": [{"question": "...", ...}, ...]}`. We surface the first
+    question text plus a count so the marker actually carries signal.
     """
+    if name == "AskUserQuestion":
+        qs = inp.get("questions") if isinstance(inp, dict) else None
+        if isinstance(qs, list) and qs:
+            first = qs[0] if isinstance(qs[0], dict) else {}
+            q = str(first.get("question") or "").replace("\n", " ").strip()
+            limit = max_value_len if max_value_len is not None else DEFAULT_TOOL_VALUE_LIMIT
+            if len(q) > limit:
+                q = q[: limit - 3] + "..."
+            tail = f" +{len(qs) - 1} more" if len(qs) > 1 else ""
+            return f"[{name} q={q}{tail}]" if q else f"[{name}]"
+        return f"[{name}]"
+
     keys = PRINTABLE_TOOL_INPUT_KEYS.get(name, ())
     limit = max_value_len if max_value_len is not None else TOOL_VALUE_LIMITS.get(name, DEFAULT_TOOL_VALUE_LIMIT)
 
@@ -214,6 +242,7 @@ def short_tool_input(
         if v is None:
             continue
         s = str(v).replace("\n", " ").strip()
+        s = _collapse_home(s)
         if name in PATH_TOOLS and k in ("file_path", "path") and seen_paths is not None:
             if s in seen_paths:
                 # Already rendered this path verbatim earlier; collapse to basename

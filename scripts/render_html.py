@@ -169,7 +169,7 @@ code { background: #161b22; padding: 2px 6px; border-radius: 3px; font-family: '
 """
 
 
-def truncate(s: str, n: int = 600) -> str:
+def truncate(s: str, n: int = 1500) -> str:
     s = s.strip()
     if len(s) <= n:
         return s
