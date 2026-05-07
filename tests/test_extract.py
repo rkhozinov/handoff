@@ -98,6 +98,41 @@ def test_short_tool_input_strips_newlines():
     assert "\n" not in s
 
 
+def test_short_tool_input_skill_includes_skill_name():
+    """Skill marker must surface the skill name; bare `[Skill]` is zero signal."""
+    s = extract.short_tool_input("Skill", {"skill": "recall"})
+    assert s == "[Skill skill=recall]"
+
+
+def test_short_tool_input_glob_includes_pattern_and_path():
+    """Glob marker must carry both the pattern and the search path so a
+    reader can tell whole-repo from sub-dir scope."""
+    s = extract.short_tool_input(
+        "Glob", {"pattern": "**/*.yml", "path": "/repo/foo"}
+    )
+    assert "pattern=**/*.yml" in s
+    assert "path=/repo/foo" in s
+
+
+def test_short_tool_input_glob_repeat_path_collapses_to_basename():
+    """Two consecutive Globs against the same path → second renders just
+    the basename, mirroring the Read basename-collapse behavior."""
+    seen: set[str] = set()
+    first = extract.short_tool_input(
+        "Glob",
+        {"pattern": "**/*.py", "path": "/repo/services/api"},
+        seen_paths=seen,
+    )
+    second = extract.short_tool_input(
+        "Glob",
+        {"pattern": "**/*.yml", "path": "/repo/services/api"},
+        seen_paths=seen,
+    )
+    assert "path=/repo/services/api" in first
+    assert "path=api" in second
+    assert "/repo/services/api" not in second
+
+
 # ---------- decisions ----------
 
 @pytest.mark.parametrize(

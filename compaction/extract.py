@@ -27,7 +27,7 @@ PRINTABLE_TOOL_INPUT_KEYS = {
     "Edit": ("file_path",),
     "Write": ("file_path",),
     "Grep": ("pattern", "path"),
-    "Glob": ("pattern",),
+    "Glob": ("pattern", "path"),
     "WebFetch": ("url",),
     "WebSearch": ("query",),
     "TaskCreate": ("subject",),
@@ -35,6 +35,8 @@ PRINTABLE_TOOL_INPUT_KEYS = {
     # Sub-agent dispatch — show what was researched, not just `[Agent]`.
     "Agent": ("description", "subagent_type"),
     "Task": ("description", "subagent_type"),
+    # Skill invocation — without this the marker is bare `[Skill]` (no signal).
+    "Skill": ("skill",),
 }
 
 # Per-tool max value length. Bash commands are ephemeral and bloat the brief.
@@ -47,7 +49,7 @@ DEFAULT_TOOL_VALUE_LIMIT = 100
 
 # Tools whose primary key is a file path. Used to apply basename-only
 # rendering on repeat occurrences.
-PATH_TOOLS = frozenset({"Read", "Edit", "Write", "Grep"})
+PATH_TOOLS = frozenset({"Read", "Edit", "Write", "Grep", "Glob"})
 
 DROP_TOP_TYPES = frozenset({
     "attachment",
