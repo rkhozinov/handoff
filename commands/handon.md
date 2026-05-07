@@ -12,10 +12,16 @@ you're in.
 Run these steps:
 
 1. Resolve the current session id from the newest JSONL in this cwd's CC
-   project dir (the file CC is writing to right now is the one you're in):
+   project dir (the file CC is writing to right now is the one you're in).
+   Use the **physical** cwd (`pwd -P`) so symlinked paths like iCloud
+   mirrors resolve to the same dir CC indexes under, and replace every
+   non-alphanumeric character with `-` to match CC's project-dir encoding
+   (it folds `/`, `.`, ` `, `~`, etc. all to `-`):
 
    ```bash
-   PROJECT_DIR="$HOME/.claude/projects/${PWD//\//-}"
+   REAL_CWD=$(pwd -P)
+   ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
+   PROJECT_DIR="$HOME/.claude/projects/$ENC"
    SID=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl)
    BRIEF="$HOME/.claude/compaction/${SID}.md"
    ```
