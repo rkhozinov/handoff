@@ -504,15 +504,15 @@ def extract_todo_snapshot(entries: Iterable[dict]) -> str | None:
 _PLAN_PATH_RE = re.compile(r"(?:^|/)plans?/.+\.md$", re.IGNORECASE)
 
 
-def extract_plans_saved(entries: Iterable[dict]) -> list[tuple[str, str]]:
-    """Return (path, content) for every plan file the assistant wrote.
+def extract_plans_saved(entries: Iterable[dict]) -> list[str]:
+    """Return paths of plan files the assistant wrote, in first-write order.
 
     Detects Write tool_use calls whose `file_path` lives under a `/plans/`
-    (or `/plan/`) directory and ends in `.md`. If a plan path is written
-    multiple times, the last write wins (assumed to be the final state).
-    Always preserved in the brief — plans are why the session existed.
+    (or `/plan/`) directory and ends in `.md`. Only the path is captured —
+    the file persists on disk, so the brief just needs a pointer. If the
+    same plan is written multiple times, only the first occurrence is kept.
     """
-    by_path: dict[str, str] = {}
+    seen: dict[str, None] = {}
     for e in entries:
         if e.get("type") != "assistant":
             continue
@@ -525,6 +525,6 @@ def extract_plans_saved(entries: Iterable[dict]) -> list[tuple[str, str]]:
             path = str(inp.get("file_path") or "")
             if not path or not _PLAN_PATH_RE.search(path):
                 continue
-            content = str(inp.get("content") or "")
-            by_path[path] = content
-    return list(by_path.items())
+            if path not in seen:
+                seen[path] = None
+    return list(seen.keys())

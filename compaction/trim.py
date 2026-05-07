@@ -267,8 +267,7 @@ def _render_tier1(
     agent_reports: list[tuple[str, str, str]] | None = None,
     agent_report_limit: int = 5,
     agent_report_max_chars: int = 1500,
-    plans: list[tuple[str, str]] | None = None,
-    plan_max_chars: int = 1500,
+    plans: list[str] | None = None,
 ) -> str:
     archive_line = (
         f"Full session: memory doc `{archive_hash}` — recall via `memory doc get {archive_hash}`"
@@ -305,14 +304,11 @@ def _render_tier1(
         out.append("```")
 
     if plans:
-        # Plans saved during the session — preserved verbatim because
-        # they're often the whole point of the session. Multiple plans
-        # render in write order; per-plan content capped but section
-        # itself is never dropped under tier1 squeeze (see _attempt).
+        # Plan files saved during the session — only the path is recorded.
+        # The file persists on disk; reader can `Read` it when needed.
         out.append(f"\n## Plans Saved ({len(plans)})")
-        for path, content in plans:
-            out.append(f"\n### `{path}`")
-            out.append(_truncate(content, plan_max_chars))
+        for path in plans:
+            out.append(f"- `{path}`")
 
     if errors:
         out.append("\n## Errors Hit")
@@ -499,7 +495,7 @@ def render_brief(
     # code anchors → fewer user msgs → tighter per-section caps. Agent
     # report cap also tightens because reports can be 1500 chars × 5 = 7.5 KB.
     def _attempt(file_lim, code_lim, user_msg_lim, code_chars, user_chars,
-                 agent_lim, agent_chars, plan_chars):
+                 agent_lim, agent_chars):
         return _render_tier1(
             iso=iso, session_id=session_id, cwd=cwd, archive_hash=archive_hash,
             tier2_path=tier2_path, signal_msgs=signal_msgs, decisions=decisions,
@@ -512,18 +508,13 @@ def render_brief(
             agent_report_limit=agent_lim,
             agent_report_max_chars=agent_chars,
             plans=plans,
-            plan_max_chars=plan_chars,
         )
 
-    # Squeeze schedule: file_lim, code_lim, user_msg_lim, code_chars,
-    # user_chars, agent_lim, agent_chars, plan_chars. Plans get squeezed
-    # least aggressively because the user explicitly asked them preserved
-    # — the section itself never drops, only its per-plan length tightens.
     for params in [
-        (50, 10, 20, 800, 500, 5, 1500, 1500),   # default
-        (30, 5, 15, 400, 300, 5, 800, 1200),     # 1st squeeze
-        (20, 3, 10, 200, 200, 3, 500, 1000),     # 2nd squeeze
-        (10, 2, 5, 100, 120, 2, 300, 800),       # 3rd squeeze
+        (50, 10, 20, 800, 500, 5, 1500),   # default
+        (30, 5, 15, 400, 300, 5, 800),     # 1st squeeze
+        (20, 3, 10, 200, 200, 3, 500),     # 2nd squeeze
+        (10, 2, 5, 100, 120, 2, 300),      # 3rd squeeze
     ]:
         tier1 = _attempt(*params)
         if len(tier1.encode("utf-8")) <= TIER1_BUDGET_BYTES:

@@ -568,8 +568,7 @@ def test_extract_plans_saved_basic():
             },
         }
     ])
-    plans = extract.extract_plans_saved([e])
-    assert plans == [("/Users/x/.claude/plans/foo.md", "# Plan: do the thing")]
+    assert extract.extract_plans_saved([e]) == ["/Users/x/.claude/plans/foo.md"]
 
 
 def test_extract_plans_saved_ignores_non_plan_writes():
@@ -583,7 +582,8 @@ def test_extract_plans_saved_ignores_non_plan_writes():
     assert extract.extract_plans_saved([e]) == []
 
 
-def test_extract_plans_saved_dedups_same_path_to_last_write():
+def test_extract_plans_saved_dedups_repeated_writes_to_same_path():
+    """Same plan written twice → one entry."""
     e = _assistant_blocks([
         {
             "type": "tool_use",
@@ -596,8 +596,7 @@ def test_extract_plans_saved_dedups_same_path_to_last_write():
             "input": {"file_path": "/p/plans/a.md", "content": "v2 final"},
         },
     ])
-    plans = extract.extract_plans_saved([e])
-    assert plans == [("/p/plans/a.md", "v2 final")]
+    assert extract.extract_plans_saved([e]) == ["/p/plans/a.md"]
 
 
 def test_extract_plans_saved_only_write_tool():
@@ -621,4 +620,4 @@ def test_extract_plans_saved_picks_up_singular_plan_dir():
             "input": {"file_path": "/p/plan/a.md", "content": "ok"},
         }
     ])
-    assert extract.extract_plans_saved([e]) == [("/p/plan/a.md", "ok")]
+    assert extract.extract_plans_saved([e]) == ["/p/plan/a.md"]
