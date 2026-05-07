@@ -104,6 +104,28 @@ SHORT_ACK_REPLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Tool markers worth keeping in the brief. Read tells the reader which
+# files the assistant inspected — useful reference. Other markers
+# (Bash invocations, Edit/Write, ToolSearch, ExitPlanMode, WebFetch,
+# Glob, Grep, AskUserQuestion, Skill, …) are mostly noise once the
+# tool_result bodies are gone, so they get dropped from the trimmed
+# brief. Full list still lives in the memory doc archive.
+KEEP_MARKER_TOOLS = frozenset({"Read"})
+
+
+def _filter_markers(markers: list[str]) -> list[str]:
+    """Keep only markers whose tool name is in KEEP_MARKER_TOOLS.
+    Marker shape is `[ToolName ...]` (or `[ToolName]` when arg-less)."""
+    out: list[str] = []
+    for m in markers:
+        # Pull the tool name out of the leading `[Name` segment.
+        if not m.startswith("["):
+            continue
+        name = m[1:].split(" ", 1)[0].rstrip("]")
+        if name in KEEP_MARKER_TOOLS:
+            out.append(m)
+    return out
+
 
 def render_assistant(
     entry: dict,
@@ -113,6 +135,8 @@ def render_assistant(
     """Render an assistant turn for the trimmed conversation. Returns None
     when the turn produces nothing worth keeping."""
     text_joined, tool_markers = _classify_assistant(entry, seen_paths=seen_paths)
+    # Drop noisy markers (everything except KEEP_MARKER_TOOLS).
+    tool_markers = _filter_markers(tool_markers)
 
     if text_joined:
         same_turn_drop = len(text_joined) <= 80 and tool_markers

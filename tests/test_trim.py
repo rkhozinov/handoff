@@ -29,20 +29,39 @@ def test_render_assistant_text_kept():
     assert "Hello world" in render_assistant(e)
 
 
-def test_render_assistant_tool_use_marker():
-    e = _a([{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}])
-    assert render_assistant(e) == "[Bash command=ls]"
+def test_render_assistant_read_marker_kept():
+    """Read markers survive — they tell the reader which files were
+    inspected. Other markers are dropped (see KEEP_MARKER_TOOLS)."""
+    e = _a([{"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}}])
+    assert render_assistant(e) == "[Read file_path=/x.py]"
 
 
-def test_short_narration_dropped_alongside_tool_use():
-    """Same-turn drop: short text + tool_use → tool_use only."""
+def test_render_assistant_drops_non_read_markers():
+    """Bash, Edit, Write, ToolSearch, ExitPlanMode, etc. produce empty
+    output unless paired with substantive text — they're noise once the
+    tool_result body is gone."""
+    for name, inp in [
+        ("Bash", {"command": "ls"}),
+        ("Edit", {"file_path": "/x.py"}),
+        ("Write", {"file_path": "/x.py"}),
+        ("ToolSearch", {}),
+        ("ExitPlanMode", {}),
+        ("WebFetch", {"url": "https://example.com"}),
+        ("Glob", {"pattern": "**/*.py"}),
+    ]:
+        e = _a([{"type": "tool_use", "name": name, "input": inp}])
+        assert render_assistant(e) is None, f"{name} marker should be dropped"
+
+
+def test_short_narration_dropped_alongside_read_tool_use():
+    """Same-turn drop: short narration text + Read tool_use → marker only."""
     e = _a(
         [
             {"type": "text", "text": "Let me check"},
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
         ]
     )
-    assert render_assistant(e) == "[Bash command=ls]"
+    assert render_assistant(e) == "[Read file_path=/x.py]"
 
 
 def test_long_text_kept_even_with_tool_use():
@@ -80,26 +99,27 @@ def test_render_assistant_dedups_repeated_tool_markers_in_turn():
     collapse to `[marker] ×N`."""
     e = _a(
         [
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
         ]
     )
     out = render_assistant(e)
-    assert out == "[Bash command=ls] ×3"
+    assert out == "[Read file_path=/x.py] ×3"
 
 
 def test_render_assistant_dedup_preserves_distinct_markers():
     """Distinct adjacent markers are not merged."""
     e = _a(
         [
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
-            {"type": "tool_use", "name": "Bash", "input": {"command": "pwd"}},
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/y.py"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
         ]
     )
-    out = render_assistant(e)
-    assert out == "[Bash command=ls] [Bash command=pwd] [Bash command=ls]"
+    out = render_assistant(e, seen_paths=set())
+    # Second occurrence of /x.py collapses to basename (existing behavior).
+    assert out == "[Read file_path=/x.py] [Read file_path=/y.py] [Read file_path=x.py]"
 
 
 def test_hard_truncate_keeps_brief_under_budget():
@@ -165,9 +185,11 @@ def test_render_brief_includes_subagent_findings_section():
     assert "PreCompact hook exists" in out
 
 
-def test_render_brief_subagent_marker_shows_description():
-    """Tier1 + tier2 should render `[Agent description=... subagent_type=...]`,
-    not bare `[Agent]`."""
+def test_render_brief_subagent_dispatch_dropped_when_no_report():
+    """Agent dispatch with no result attached has nothing to surface —
+    the marker itself is filtered (KEEP_MARKER_TOOLS = {Read}). The
+    description shows up via Sub-Agent Findings only when the tool_result
+    actually carries a report (covered by the test above)."""
     entries = [
         _a(
             [
@@ -185,10 +207,8 @@ def test_render_brief_subagent_marker_shows_description():
     ]
     tier1, tier2 = render_brief(entries, session_id="s", cwd="/c", archive_hash=None)
     combined = tier1 + tier2
-    assert "[Agent" in combined
-    # Description and subagent_type both surface in the marker.
-    assert "Probe redis pool" in combined
-    assert "Explore" in combined
+    # No bare/full Agent marker should leak through.
+    assert "[Agent" not in combined
 
 
 def test_hard_truncate_handles_multibyte_boundary():
