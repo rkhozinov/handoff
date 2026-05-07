@@ -117,6 +117,19 @@ table tr:hover { background: #1c2128; }
 }
 footer { text-align: center; padding: 40px; color: #8b949e; border-top: 1px solid #30363d; }
 code { background: #161b22; padding: 2px 6px; border-radius: 3px; font-family: 'SF Mono', monospace; font-size: 0.9em; }
+
+.sample-selector {
+  margin: 16px 0 20px; padding: 12px 16px; background: #161b22;
+  border: 1px solid #30363d; border-radius: 8px; display: flex; align-items: center; gap: 12px;
+}
+.sample-selector select {
+  background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+  border-radius: 6px; padding: 6px 10px; font-family: 'SF Mono', monospace;
+  font-size: 0.95em; cursor: pointer;
+}
+.sample-selector select:hover { border-color: #58a6ff; }
+.sample-pane { display: none; }
+.sample-pane.active { display: block; }
 """
 
 
@@ -262,10 +275,32 @@ def fmt_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
+# Approximate token count for UTF-8 text. Same chars/4 heuristic the CLI
+# uses for its stderr report — accurate enough for relative comparison
+# without pulling in a tokenizer dependency.
+def bytes_to_tokens(n: int) -> int:
+    return n // 4
+
+
+def fmt_tokens(n_bytes: int) -> str:
+    tok = bytes_to_tokens(n_bytes)
+    if tok < 1_000:
+        return f"{tok} tok"
+    if tok < 1_000_000:
+        return f"{tok / 1_000:.1f}k tok"
+    return f"{tok / 1_000_000:.2f}M tok"
+
+
+def fmt_size(n: int) -> str:
+    """Show both bytes and approx tokens — token count is what fills the
+    context window, byte count is what fits on disk / inject caps."""
+    return f"{fmt_bytes(n)} <span style=\"color:#8b949e\">({fmt_tokens(n)})</span>"
+
+
 def render_stats_table(rows: list[dict]) -> str:
     out = ['<table><thead><tr>',
            '<th>fixture</th><th>lines</th><th>raw</th><th>user msgs (signal/total)</th>',
-           '<th>tier1 (≤25KB inject)</th><th>tier2 (full)</th><th>signal</th>',
+           '<th>tier1 (≤25KB / ~6.25k tok)</th><th>tier2 (full)</th><th>signal</th>',
            '</tr></thead><tbody>']
     max_raw = max(r["raw_bytes"] for r in rows)
     for r in rows:
@@ -281,13 +316,13 @@ def render_stats_table(rows: list[dict]) -> str:
         out.append(
             f'<tr><td><code>{html.escape(r["fixture"])}</code></td>'
             f'<td>{r["lines"]:,}</td>'
-            f'<td>{fmt_bytes(r["raw_bytes"])}</td>'
+            f'<td>{fmt_size(r["raw_bytes"])}</td>'
             f'<td><span class="invariant-good">{r["user_signal"]}/{r["user_signal"]}</span> '
             f'<span style="color:#8b949e">of {r["user_total"]} ({noise_pct:.0f}% noise)</span></td>'
             f'<td><span class="bar-bg"><span class="bar" style="width:{bar1_w}px"></span></span> '
-            f'{fmt_bytes(r["tier1_bytes"])} <span style="color:{fits_color};font-weight:600">{fits}</span></td>'
+            f'{fmt_size(r["tier1_bytes"])} <span style="color:{fits_color};font-weight:600">{fits}</span></td>'
             f'<td><span class="bar-bg"><span class="bar" style="width:{bar2_w}px;background:#3fb950"></span></span> '
-            f'{fmt_bytes(r["tier2_bytes"])}</td>'
+            f'{fmt_size(r["tier2_bytes"])}</td>'
             f'<td>{signal}</td></tr>'
         )
     out.append('</tbody></table>')
@@ -314,9 +349,9 @@ def hero_metrics(rows: list[dict]) -> str:
     fits_count = sum(1 for r in rows if r["tier1_bytes"] <= 25_000)
     return f"""
     <div class="hero-stats">
-      <div class="stat-card"><span class="num">{fmt_bytes(total_raw)}</span><span class="label">raw input across {len(rows)} fixtures</span></div>
-      <div class="stat-card"><span class="num">{fmt_bytes(total_tier1)}</span><span class="label">tier1 total (SessionStart inject)</span></div>
-      <div class="stat-card"><span class="num invariant-good">{fits_count}/{len(rows)}</span><span class="label">fixtures with tier1 ≤ 25 KB inject cap</span></div>
+      <div class="stat-card"><span class="num">{fmt_tokens(total_raw)}</span><span class="label">raw input across {len(rows)} fixtures ({fmt_bytes(total_raw)})</span></div>
+      <div class="stat-card"><span class="num">{fmt_tokens(total_tier1)}</span><span class="label">tier1 total ({fmt_bytes(total_tier1)} — /handon Read target)</span></div>
+      <div class="stat-card"><span class="num invariant-good">{fits_count}/{len(rows)}</span><span class="label">fixtures with tier1 ≤ 25 KB / ~6.25k tok cap</span></div>
       <div class="stat-card"><span class="num invariant-good">{total_signal}/{total_signal}</span><span class="label">signal user msgs preserved (of {total_user}; {noise_dropped} noise filtered)</span></div>
     </div>
     """
@@ -339,11 +374,58 @@ def main() -> int:
 
     rows = [stat_row(f.stem, f) for f in fixtures]
 
-    small_path = next((f for f in fixtures if f.stem == "small"), fixtures[0])
-    small_entries = load_jsonl(str(small_path))
+    # Build a diff pane and a brief preview for every fixture so the user
+    # can switch samples in the report without rerunning the script.
+    # Default selection = `small` if present, else first fixture.
+    default_fixture = next(
+        (f for f in fixtures if f.stem == "small"), fixtures[0]
+    ).stem
 
-    diff_html = build_diff_html(small_entries, max_turns=40)
-    brief_html = render_brief_html(small_entries, small_path.stem)
+    diff_panes: list[str] = []
+    brief_panes: list[str] = []
+    options: list[str] = []
+    for f in fixtures:
+        entries = load_jsonl(str(f))
+        d_html = build_diff_html(entries, max_turns=40)
+        b_html = render_brief_html(entries, f.stem)
+        active = "active" if f.stem == default_fixture else ""
+        sel = " selected" if f.stem == default_fixture else ""
+        diff_panes.append(
+            f'<div class="sample-pane diff-pane {active}" '
+            f'data-fixture="{html.escape(f.stem)}">'
+            f'<p style="color:#8b949e">Sample from <code>{html.escape(f.name)}</code>. '
+            f'Left: every entry in the raw transcript (truncated at 600 chars per '
+            f'block). Right: what the trimmer keeps. Dropped entries shown faded.</p>'
+            f'{d_html}</div>'
+        )
+        brief_panes.append(
+            f'<div class="sample-pane brief-pane {active}" '
+            f'data-fixture="{html.escape(f.stem)}">{b_html}</div>'
+        )
+        options.append(
+            f'<option value="{html.escape(f.stem)}"{sel}>{html.escape(f.stem)}</option>'
+        )
+
+    selector = (
+        '<div class="sample-selector">'
+        '<label for="fixture-select"><strong>Fixture:</strong></label> '
+        f'<select id="fixture-select">{"".join(options)}</select>'
+        '</div>'
+    )
+    selector_script = """
+<script>
+(function () {
+  var sel = document.getElementById("fixture-select");
+  if (!sel) return;
+  function show(name) {
+    document.querySelectorAll(".sample-pane").forEach(function (el) {
+      el.classList.toggle("active", el.dataset.fixture === name);
+    });
+  }
+  sel.addEventListener("change", function () { show(sel.value); });
+})();
+</script>
+"""
 
     flow = """    [User: long session, ~70% context]
                   │
@@ -364,8 +446,8 @@ def main() -> int:
                                  │
             User runs /clear     │ stdout
                                  │
-              SessionStart hook (matcher: "compact")
-                  injects brief into resumed context"""
+                       /handon
+                  reads brief into resumed context"""
 
     legend = """
     <div class="legend">
@@ -419,16 +501,16 @@ def main() -> int:
 
 <section>
   <h2>Side-by-side: raw vs trimmed</h2>
-  <p>Sample from <code>{html.escape(small_path.name)}</code>. Left: every entry in the raw transcript (truncated at 600 chars per block). Right: what the trimmer keeps. Dropped entries shown faded.</p>
+  {selector}
   {legend}
-  {diff_html}
+  {"".join(diff_panes)}
 </section>
 
 <section>
   <h2>Generated brief structure</h2>
-  <p>This is what gets written to <code>~/.claude/compaction/&lt;session_id&gt;.md</code>
-  and (head) auto-injected by the SessionStart hook on the next message after <code>/clear</code>:</p>
-  {brief_html}
+  <p>This is what <code>/handoff</code> writes to <code>~/.claude/compaction/&lt;session_id&gt;.md</code>
+  and what <code>/handon</code> reads back into the next session (head, capped at 25 KB):</p>
+  {"".join(brief_panes)}
 </section>
 
 <section>
@@ -442,7 +524,7 @@ def main() -> int:
   <p>tests · real fixtures · zero LLM calls in the trim path.</p>
   <p><code>~/repos/claude-compaction</code></p>
 </footer>
-
+{selector_script}
 </body>
 </html>
 """

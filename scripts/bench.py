@@ -43,11 +43,17 @@ def stats_for(fixture: Path) -> dict:
 
     signal_kept = sum(1 for m in signal_user if m in combined)
 
+    # Token approximation: chars/4. Same heuristic the CLI prints in its
+    # stderr summary. Good enough for relative comparison; for an exact
+    # count, use anthropic.client.messages.count_tokens().
     return {
         "fixture": fixture.name,
         "bytes_in": len(raw),
+        "tok_in": len(raw) // 4,
         "tier1_b": tier1_bytes,
+        "tier1_tok": tier1_bytes // 4,
         "tier2_b": tier2_bytes,
+        "tier2_tok": tier2_bytes // 4,
         "ratio_pct": round(100 * (tier1_bytes + tier2_bytes) / max(1, len(raw)), 2),
         "tier1_fits_25k": "✓" if tier1_bytes <= 25_000 else "✗",
         "user_total": len(all_user),
