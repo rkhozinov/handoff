@@ -221,8 +221,10 @@ def build_diff_html(entries: list[dict], max_turns: int = 60) -> str:
     for i, e in enumerate(interesting):
         nxt = interesting[i + 1] if i + 1 < len(interesting) else None
         kind, label, body = render_raw_turn(e)
+        # data-idx pairs each raw turn with its trimmed sibling so the
+        # anchor-based scroll sync can align them top-to-top.
         raw_html.append(
-            f'<div class="turn turn-{kind}">'
+            f'<div class="turn turn-{kind}" data-idx="{i}">'
             f'<span class="turn-label label-{kind}">{html.escape(label)}</span>'
             f'<pre class="pre">{body}</pre></div>'
         )
@@ -230,14 +232,14 @@ def build_diff_html(entries: list[dict], max_turns: int = 60) -> str:
         trimmed = render_trimmed_turn(e, nxt)
         if trimmed is None:
             trim_html.append(
-                f'<div class="turn turn-{kind}" style="opacity:0.25;">'
+                f'<div class="turn turn-{kind}" data-idx="{i}" style="opacity:0.25;">'
                 f'<span class="turn-label label-{kind}">DROPPED ({html.escape(label)})</span>'
                 f'<pre class="pre dropped">{body}</pre></div>'
             )
         else:
             tk, tl, tb = trimmed
             trim_html.append(
-                f'<div class="turn turn-{tk}">'
+                f'<div class="turn turn-{tk}" data-idx="{i}">'
                 f'<span class="turn-label label-{tk}">{html.escape(tl)}</span>'
                 f'<pre class="pre">{tb}</pre></div>'
             )
@@ -446,25 +448,46 @@ def main() -> int:
   sel.addEventListener("change", function () { show(sel.value); });
 })();
 (function () {
-  // Mirror scroll between the raw and trimmed columns of each diff pane.
-  // The two columns can have very different total heights (raw has all
-  // turns, trimmed has fewer + faded drops), so we sync the *proportion*
-  // scrolled rather than the raw scrollTop. A re-entrancy flag prevents
-  // the mirrored scroll from triggering its own handler in a feedback loop.
+  // Anchor-based scroll sync. Each raw turn shares a `data-idx` with its
+  // trimmed sibling (DROPPED placeholders carry the same idx so the pair
+  // never desyncs). Whichever pane the user scrolls, we read which turn
+  // sits at the top of the visible area, then snap the other pane so the
+  // matching turn aligns to its top. Re-entrancy flag blocks the feedback
+  // loop the mirrored scroll would otherwise trigger.
   document.querySelectorAll(".diff-grid").forEach(function (grid) {
     var cols = grid.querySelectorAll(".diff-col");
     if (cols.length !== 2) return;
     var left = cols[0], right = cols[1];
     var syncing = false;
+
+    function topAnchor(pane) {
+      var paneTop = pane.getBoundingClientRect().top;
+      var turns = pane.querySelectorAll(".turn[data-idx]");
+      for (var i = 0; i < turns.length; i++) {
+        // First turn whose bottom edge is below the pane top is the one
+        // currently anchoring the visible region.
+        if (turns[i].getBoundingClientRect().bottom > paneTop + 4) {
+          return turns[i].dataset.idx;
+        }
+      }
+      return null;
+    }
+
+    function alignTo(pane, idx) {
+      var anchor = pane.querySelector('.turn[data-idx="' + idx + '"]');
+      if (!anchor) return;
+      var paneRect = pane.getBoundingClientRect();
+      var anchorRect = anchor.getBoundingClientRect();
+      pane.scrollTop += (anchorRect.top - paneRect.top);
+    }
+
     function mirror(src, dst) {
       return function () {
         if (syncing) return;
-        var srcMax = src.scrollHeight - src.clientHeight;
-        var dstMax = dst.scrollHeight - dst.clientHeight;
-        if (srcMax <= 0 || dstMax <= 0) return;
+        var idx = topAnchor(src);
+        if (idx === null) return;
         syncing = true;
-        dst.scrollTop = (src.scrollTop / srcMax) * dstMax;
-        // Release the flag after the mirrored scroll's own event has fired.
+        alignTo(dst, idx);
         requestAnimationFrame(function () { syncing = false; });
       };
     }
