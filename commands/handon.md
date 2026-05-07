@@ -6,11 +6,14 @@ Restore the latest /handoff brief for this cwd into the conversation.
 
 Run these steps:
 
-1. Compute the cwd-keyed brief path:
+1. Compute the cwd-keyed brief path. Use the central slug helper so the
+   shape matches what `/handoff` writes (cwd + branch fingerprint when in
+   a git checkout):
    ```bash
-   SLUG="$(pwd | tr '/' '-')"
+   SLUG="$(cd ~/repos/claude-compaction && PYTHONPATH=. python3 -m compaction.slug "$PWD" 2>/dev/null || echo "${PWD//\//-}")"
    BRIEF="$HOME/.claude/compaction/latest-${SLUG}.md"
    ```
+   The `||` fallback preserves restore behavior if the helper is unavailable.
 
 2. If the file does not exist or is older than 24 hours, list available
    briefs in `~/.claude/compaction/` (excluding `consumed-*`, `latest-*`,
