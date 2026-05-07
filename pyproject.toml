@@ -14,6 +14,13 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
 ]
+hf = [
+    "transformers>=4.40",
+    "tokenizers>=0.19",
+]
+api = [
+    "anthropic>=0.40",
+]
 
 [project.scripts]
 cc-handoff = "compaction.cli:main"

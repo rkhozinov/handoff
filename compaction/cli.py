@@ -28,6 +28,7 @@ from compaction.recall import (
     search_memories,
     store_agent_reports,
 )
+from compaction.tokenizer import VALID_MODES, count_tokens
 from compaction.trim import render_brief
 
 
@@ -63,6 +64,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-agent-store",
         action="store_true",
         help="Skip auto-storing sub-agent reports to memory (default: store)",
+    )
+    p.add_argument(
+        "--token-mode",
+        choices=VALID_MODES,
+        default="auto",
+        help=(
+            "Tokenizer used in the stderr summary line. "
+            "'auto' (default) prefers the offline HF tokenizer and falls back "
+            "to the chars/4 heuristic. 'hf' requires `transformers`; 'api' "
+            "requires the anthropic SDK + ANTHROPIC_API_KEY (network call); "
+            "'chars4' is the legacy heuristic."
+        ),
     )
     return p.parse_args(argv)
 
@@ -127,9 +140,11 @@ def main(argv: list[str] | None = None) -> int:
     print(str(tier1_path))
     tier1_bytes = len(tier1.encode("utf-8"))
     tier2_bytes = len(tier2.encode("utf-8"))
+    tier1_tok = count_tokens(tier1, mode=args.token_mode)
+    tier2_tok = count_tokens(tier2, mode=args.token_mode)
     sys.stderr.write(
-        f"tier1={tier1_bytes}B (~{tier1_bytes // 4} tok)  "
-        f"tier2={tier2_bytes}B (~{tier2_bytes // 4} tok)  "
+        f"tier1={tier1_bytes}B (~{tier1_tok} tok)  "
+        f"tier2={tier2_bytes}B (~{tier2_tok} tok)  "
         f"archive={archive_hash[:12] if archive_hash else 'none'}  "
         f"agent_reports={agent_stored}/{agent_count}\n"
     )
