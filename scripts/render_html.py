@@ -424,6 +424,33 @@ def main() -> int:
   }
   sel.addEventListener("change", function () { show(sel.value); });
 })();
+(function () {
+  // Mirror scroll between the raw and trimmed columns of each diff pane.
+  // The two columns can have very different total heights (raw has all
+  // turns, trimmed has fewer + faded drops), so we sync the *proportion*
+  // scrolled rather than the raw scrollTop. A re-entrancy flag prevents
+  // the mirrored scroll from triggering its own handler in a feedback loop.
+  document.querySelectorAll(".diff-grid").forEach(function (grid) {
+    var cols = grid.querySelectorAll(".diff-col");
+    if (cols.length !== 2) return;
+    var left = cols[0], right = cols[1];
+    var syncing = false;
+    function mirror(src, dst) {
+      return function () {
+        if (syncing) return;
+        var srcMax = src.scrollHeight - src.clientHeight;
+        var dstMax = dst.scrollHeight - dst.clientHeight;
+        if (srcMax <= 0 || dstMax <= 0) return;
+        syncing = true;
+        dst.scrollTop = (src.scrollTop / srcMax) * dstMax;
+        // Release the flag after the mirrored scroll's own event has fired.
+        requestAnimationFrame(function () { syncing = false; });
+      };
+    }
+    left.addEventListener("scroll", mirror(left, right));
+    right.addEventListener("scroll", mirror(right, left));
+  });
+})();
 </script>
 """
 
