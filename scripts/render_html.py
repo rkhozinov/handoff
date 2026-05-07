@@ -440,29 +440,32 @@ def main() -> int:
         (f for f in fixtures if f.stem == "small"), fixtures[0]
     ).stem
 
-    diff_panes: list[str] = []
-    brief_panes: list[str] = []
+    # Each fixture's diff + brief is wrapped in its own <template>. The
+    # <template> element's content is parsed into an inert fragment — no
+    # render, no layout — until JS clones it into the active container.
+    # Switching fixtures clears the active container and clones the new
+    # template, so only one fixture's DOM is "live" at a time.
+    diff_templates: list[str] = []
+    brief_templates: list[str] = []
     options: list[str] = []
     for f in fixtures:
         entries = load_jsonl(str(f))
         d_html = build_diff_html(entries, max_turns=None)
         b_html = render_brief_html(entries, f.stem)
-        active = "active" if f.stem == default_fixture else ""
         sel = " selected" if f.stem == default_fixture else ""
-        diff_panes.append(
-            f'<div class="sample-pane diff-pane {active}" '
-            f'data-fixture="{html.escape(f.stem)}">'
+        stem = html.escape(f.stem)
+        diff_templates.append(
+            f'<template id="fix-diff-{stem}" data-fixture="{stem}">'
             f'<p style="color:#8b949e">Sample from <code>{html.escape(f.name)}</code>. '
-            f'Left: every entry in the raw transcript (truncated at 600 chars per '
-            f'block). Right: what the trimmer keeps. Dropped entries shown faded.</p>'
-            f'{d_html}</div>'
+            f'Left: every entry in the raw transcript (truncated per block). '
+            f'Right: what the trimmer keeps. Dropped entries shown faded.</p>'
+            f'{d_html}</template>'
         )
-        brief_panes.append(
-            f'<div class="sample-pane brief-pane {active}" '
-            f'data-fixture="{html.escape(f.stem)}">{b_html}</div>'
+        brief_templates.append(
+            f'<template id="fix-brief-{stem}" data-fixture="{stem}">{b_html}</template>'
         )
         options.append(
-            f'<option value="{html.escape(f.stem)}"{sel}>{html.escape(f.stem)}</option>'
+            f'<option value="{stem}"{sel}>{stem}</option>'
         )
 
     selector = (
@@ -474,62 +477,75 @@ def main() -> int:
     selector_script = """
 <script>
 (function () {
+  // Lazy-load fixture content. Each fixture's diff + brief lives in a
+  // <template> (inert: parsed into a DocumentFragment, no render cost).
+  // Switching the selector empties the active containers and clones the
+  // chosen fixture's content in. Old DOM is removed → unloaded.
   var sel = document.getElementById("fixture-select");
   if (!sel) return;
-  function show(name) {
-    document.querySelectorAll(".sample-pane").forEach(function (el) {
-      el.classList.toggle("active", el.dataset.fixture === name);
+  var diffActive = document.getElementById("diff-active");
+  var briefActive = document.getElementById("brief-active");
+  if (!diffActive || !briefActive) return;
+
+  function bindScrollSync(scope) {
+    // Anchor-based scroll sync. Each raw turn shares a `data-idx` with
+    // its trimmed sibling (DROPPED placeholders share the idx so the
+    // pair never desyncs). Re-entrancy flag blocks the feedback loop
+    // the mirrored scroll would otherwise trigger.
+    scope.querySelectorAll(".diff-grid").forEach(function (grid) {
+      var cols = grid.querySelectorAll(".diff-col");
+      if (cols.length !== 2) return;
+      var left = cols[0], right = cols[1];
+      var syncing = false;
+      function topAnchor(pane) {
+        var paneTop = pane.getBoundingClientRect().top;
+        var turns = pane.querySelectorAll(".turn[data-idx]");
+        for (var i = 0; i < turns.length; i++) {
+          if (turns[i].getBoundingClientRect().bottom > paneTop + 4) {
+            return turns[i].dataset.idx;
+          }
+        }
+        return null;
+      }
+      function alignTo(pane, idx) {
+        var anchor = pane.querySelector('.turn[data-idx="' + idx + '"]');
+        if (!anchor) return;
+        var paneRect = pane.getBoundingClientRect();
+        var anchorRect = anchor.getBoundingClientRect();
+        pane.scrollTop += (anchorRect.top - paneRect.top);
+      }
+      function mirror(src, dst) {
+        return function () {
+          if (syncing) return;
+          var idx = topAnchor(src);
+          if (idx === null) return;
+          syncing = true;
+          alignTo(dst, idx);
+          requestAnimationFrame(function () { syncing = false; });
+        };
+      }
+      left.addEventListener("scroll", mirror(left, right));
+      right.addEventListener("scroll", mirror(right, left));
     });
   }
+
+  function show(name) {
+    var diffTpl = document.getElementById("fix-diff-" + name);
+    var briefTpl = document.getElementById("fix-brief-" + name);
+    if (!diffTpl || !briefTpl) return;
+    // Replace contents — old DOM detaches and gets GCed.
+    diffActive.replaceChildren(diffTpl.content.cloneNode(true));
+    briefActive.replaceChildren(briefTpl.content.cloneNode(true));
+    diffActive.dataset.fixture = name;
+    briefActive.dataset.fixture = name;
+    bindScrollSync(diffActive);
+    // Re-apply persisted flag state to the freshly attached turns.
+    if (window.__compactionRefreshFlags) window.__compactionRefreshFlags();
+  }
+
   sel.addEventListener("change", function () { show(sel.value); });
-})();
-(function () {
-  // Anchor-based scroll sync. Each raw turn shares a `data-idx` with its
-  // trimmed sibling (DROPPED placeholders carry the same idx so the pair
-  // never desyncs). Whichever pane the user scrolls, we read which turn
-  // sits at the top of the visible area, then snap the other pane so the
-  // matching turn aligns to its top. Re-entrancy flag blocks the feedback
-  // loop the mirrored scroll would otherwise trigger.
-  document.querySelectorAll(".diff-grid").forEach(function (grid) {
-    var cols = grid.querySelectorAll(".diff-col");
-    if (cols.length !== 2) return;
-    var left = cols[0], right = cols[1];
-    var syncing = false;
-
-    function topAnchor(pane) {
-      var paneTop = pane.getBoundingClientRect().top;
-      var turns = pane.querySelectorAll(".turn[data-idx]");
-      for (var i = 0; i < turns.length; i++) {
-        // First turn whose bottom edge is below the pane top is the one
-        // currently anchoring the visible region.
-        if (turns[i].getBoundingClientRect().bottom > paneTop + 4) {
-          return turns[i].dataset.idx;
-        }
-      }
-      return null;
-    }
-
-    function alignTo(pane, idx) {
-      var anchor = pane.querySelector('.turn[data-idx="' + idx + '"]');
-      if (!anchor) return;
-      var paneRect = pane.getBoundingClientRect();
-      var anchorRect = anchor.getBoundingClientRect();
-      pane.scrollTop += (anchorRect.top - paneRect.top);
-    }
-
-    function mirror(src, dst) {
-      return function () {
-        if (syncing) return;
-        var idx = topAnchor(src);
-        if (idx === null) return;
-        syncing = true;
-        alignTo(dst, idx);
-        requestAnimationFrame(function () { syncing = false; });
-      };
-    }
-    left.addEventListener("scroll", mirror(left, right));
-    right.addEventListener("scroll", mirror(right, left));
-  });
+  // Initial paint: load the default fixture.
+  show(sel.value);
 })();
 (function () {
   // Flag-and-review: click any .turn to mark it as weird. Toolbar at
@@ -551,8 +567,10 @@ def main() -> int:
   document.body.appendChild(bar);
 
   function fixtureOf(turn) {
-    var pane = turn.closest(".sample-pane");
-    return pane ? pane.dataset.fixture || "?" : "?";
+    // After lazy-load refactor, active fixture name lives on
+    // `#diff-active`/`#brief-active`. Walk up to either container.
+    var holder = turn.closest("#diff-active, #brief-active");
+    return holder ? holder.dataset.fixture || "?" : "?";
   }
   function sideOf(turn) {
     var col = turn.closest(".diff-col");
@@ -574,6 +592,9 @@ def main() -> int:
       keys.length + (keys.length === 1 ? " flagged" : " flagged");
     bar.classList.toggle("visible", keys.length > 0);
   }
+  // Expose to the lazy-loader so it can re-apply flags after switching
+  // fixtures (the new turns won't carry the .turn--flagged class).
+  window.__compactionRefreshFlags = refresh;
   function persist() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(flags)); } catch (e) {}
   }
@@ -704,14 +725,16 @@ def main() -> int:
   <h2>Side-by-side: raw vs trimmed</h2>
   {selector}
   {legend}
-  {"".join(diff_panes)}
+  {"".join(diff_templates)}
+  <div id="diff-active"></div>
 </section>
 
 <section>
   <h2>Generated brief structure</h2>
   <p>This is what <code>/handoff</code> writes to <code>~/.claude/compaction/&lt;session_id&gt;.md</code>
   and what <code>/handon</code> reads back into the next session (head, capped at 25 KB):</p>
-  {"".join(brief_panes)}
+  {"".join(brief_templates)}
+  <div id="brief-active"></div>
 </section>
 
 <section>
