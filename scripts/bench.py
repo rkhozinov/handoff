@@ -20,13 +20,15 @@ from compaction.extract import (
     iter_signal_user_msgs,
     load_jsonl,
 )
+from compaction.tokenizer import VALID_MODES, count_tokens
 from compaction.trim import render_brief
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def stats_for(fixture: Path) -> dict:
+def stats_for(fixture: Path, token_mode: str = "auto") -> dict:
     raw = fixture.read_bytes()
+    raw_text = raw.decode("utf-8", errors="replace")
     entries = load_jsonl(str(fixture))
     all_user = iter_real_user_msgs(entries)
     signal_user = iter_signal_user_msgs(entries)
@@ -43,17 +45,18 @@ def stats_for(fixture: Path) -> dict:
 
     signal_kept = sum(1 for m in signal_user if m in combined)
 
-    # Token approximation: chars/4. Same heuristic the CLI prints in its
-    # stderr summary. Good enough for relative comparison; for an exact
-    # count, use anthropic.client.messages.count_tokens().
+    # Token counts now go through the pluggable tokenizer in
+    # compaction.tokenizer. Default mode "auto" prefers the offline HF
+    # tokenizer (Xenova/claude-tokenizer) and falls back to the legacy
+    # chars/4 heuristic if transformers is not installed.
     return {
         "fixture": fixture.name,
         "bytes_in": len(raw),
-        "tok_in": len(raw) // 4,
+        "tok_in": count_tokens(raw_text, mode=token_mode),
         "tier1_b": tier1_bytes,
-        "tier1_tok": tier1_bytes // 4,
+        "tier1_tok": count_tokens(tier1, mode=token_mode),
         "tier2_b": tier2_bytes,
-        "tier2_tok": tier2_bytes // 4,
+        "tier2_tok": count_tokens(tier2, mode=token_mode),
         "ratio_pct": round(100 * (tier1_bytes + tier2_bytes) / max(1, len(raw)), 2),
         "tier1_fits_25k": "✓" if tier1_bytes <= 25_000 else "✗",
         "user_total": len(all_user),
@@ -84,6 +87,16 @@ def main() -> int:
         default=str(ROOT / "tests" / "fixtures" / "raw"),
         help="Fixture dir (defaults to raw; falls back to scrubbed)",
     )
+    ap.add_argument(
+        "--token-mode",
+        choices=VALID_MODES,
+        default="auto",
+        help=(
+            "Tokenizer used for tok_in / tier{1,2}_tok columns. "
+            "'auto' (default) uses the HF tokenizer when available and "
+            "falls back to chars/4. See compaction.tokenizer for details."
+        ),
+    )
     args = ap.parse_args()
 
     fdir = Path(args.fixtures)
@@ -98,7 +111,7 @@ def main() -> int:
         print(f"No fixtures in {fdir} — skipping bench (run scripts/collect_fixtures.py locally).")
         return 0
 
-    rows = [stats_for(f) for f in fixtures]
+    rows = [stats_for(f, token_mode=args.token_mode) for f in fixtures]
 
     print(f"Fixtures from: {fdir}\n")
     print(fmt_table(rows))

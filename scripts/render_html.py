@@ -22,7 +22,12 @@ from compaction.extract import (
     load_jsonl,
     user_text,
 )
+from compaction.tokenizer import VALID_MODES, count_tokens
 from compaction.trim import _classify_assistant, render_assistant, render_brief
+
+# Filled in by main() once CLI args are parsed; defaults to "auto" so the
+# helpers also work when imported directly from a test or REPL.
+_TOKEN_MODE: str = "auto"
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -247,6 +252,7 @@ def build_diff_html(entries: list[dict], max_turns: int = 60) -> str:
 
 def stat_row(label: str, path: Path) -> dict:
     raw = path.read_bytes()
+    raw_text = raw.decode("utf-8", errors="replace")
     entries = load_jsonl(str(path))
     all_user = iter_real_user_msgs(entries)
     signal_user = iter_signal_user_msgs(entries)
@@ -255,10 +261,13 @@ def stat_row(label: str, path: Path) -> dict:
         "fixture": path.name,
         "lines": sum(1 for _ in path.open("rb")),
         "raw_bytes": len(raw),
+        "raw_tokens": count_tokens(raw_text, mode=_TOKEN_MODE),
         "user_total": len(all_user),
         "user_signal": len(signal_user),
         "tier1_bytes": len(tier1.encode()),
+        "tier1_tokens": count_tokens(tier1, mode=_TOKEN_MODE),
         "tier2_bytes": len(tier2.encode()),
+        "tier2_tokens": count_tokens(tier2, mode=_TOKEN_MODE),
         "ratio_pct": 100 * (len(tier1.encode()) + len(tier2.encode())) / max(1, len(raw)),
         "decisions": len(extract_decisions(signal_user)),
         "files": len(extract_files_touched(entries)),
@@ -275,15 +284,8 @@ def fmt_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
-# Approximate token count for UTF-8 text. Same chars/4 heuristic the CLI
-# uses for its stderr report — accurate enough for relative comparison
-# without pulling in a tokenizer dependency.
-def bytes_to_tokens(n: int) -> int:
-    return n // 4
-
-
-def fmt_tokens(n_bytes: int) -> str:
-    tok = bytes_to_tokens(n_bytes)
+def fmt_tokens_count(tok: int) -> str:
+    """Format a precomputed token count for display."""
     if tok < 1_000:
         return f"{tok} tok"
     if tok < 1_000_000:
@@ -291,10 +293,14 @@ def fmt_tokens(n_bytes: int) -> str:
     return f"{tok / 1_000_000:.2f}M tok"
 
 
-def fmt_size(n: int) -> str:
-    """Show both bytes and approx tokens — token count is what fills the
-    context window, byte count is what fits on disk / inject caps."""
-    return f"{fmt_bytes(n)} <span style=\"color:#8b949e\">({fmt_tokens(n)})</span>"
+def fmt_size(n: int, tokens: int | None = None) -> str:
+    """Show both bytes and tokens — token count is what fills the context
+    window, byte count is what fits on disk / inject caps. If ``tokens`` is
+    ``None`` the legacy chars/4 estimate is used so this helper still works
+    for callers that haven't migrated yet."""
+    if tokens is None:
+        tokens = n // 4
+    return f"{fmt_bytes(n)} <span style=\"color:#8b949e\">({fmt_tokens_count(tokens)})</span>"
 
 
 def render_stats_table(rows: list[dict]) -> str:
@@ -316,13 +322,14 @@ def render_stats_table(rows: list[dict]) -> str:
         out.append(
             f'<tr><td><code>{html.escape(r["fixture"])}</code></td>'
             f'<td>{r["lines"]:,}</td>'
-            f'<td>{fmt_size(r["raw_bytes"])}</td>'
+            f'<td>{fmt_size(r["raw_bytes"], r["raw_tokens"])}</td>'
             f'<td><span class="invariant-good">{r["user_signal"]}/{r["user_signal"]}</span> '
             f'<span style="color:#8b949e">of {r["user_total"]} ({noise_pct:.0f}% noise)</span></td>'
             f'<td><span class="bar-bg"><span class="bar" style="width:{bar1_w}px"></span></span> '
-            f'{fmt_size(r["tier1_bytes"])} <span style="color:{fits_color};font-weight:600">{fits}</span></td>'
+            f'{fmt_size(r["tier1_bytes"], r["tier1_tokens"])} '
+            f'<span style="color:{fits_color};font-weight:600">{fits}</span></td>'
             f'<td><span class="bar-bg"><span class="bar" style="width:{bar2_w}px;background:#3fb950"></span></span> '
-            f'{fmt_size(r["tier2_bytes"])}</td>'
+            f'{fmt_size(r["tier2_bytes"], r["tier2_tokens"])}</td>'
             f'<td>{signal}</td></tr>'
         )
     out.append('</tbody></table>')
@@ -341,7 +348,9 @@ def render_brief_html(entries: list[dict], label: str) -> str:
 
 def hero_metrics(rows: list[dict]) -> str:
     total_raw = sum(r["raw_bytes"] for r in rows)
+    total_raw_tok = sum(r["raw_tokens"] for r in rows)
     total_tier1 = sum(r["tier1_bytes"] for r in rows)
+    total_tier1_tok = sum(r["tier1_tokens"] for r in rows)
     total_tier2 = sum(r["tier2_bytes"] for r in rows)
     total_signal = sum(r["user_signal"] for r in rows)
     total_user = sum(r["user_total"] for r in rows)
@@ -349,8 +358,8 @@ def hero_metrics(rows: list[dict]) -> str:
     fits_count = sum(1 for r in rows if r["tier1_bytes"] <= 25_000)
     return f"""
     <div class="hero-stats">
-      <div class="stat-card"><span class="num">{fmt_tokens(total_raw)}</span><span class="label">raw input across {len(rows)} fixtures ({fmt_bytes(total_raw)})</span></div>
-      <div class="stat-card"><span class="num">{fmt_tokens(total_tier1)}</span><span class="label">tier1 total ({fmt_bytes(total_tier1)} — /handon Read target)</span></div>
+      <div class="stat-card"><span class="num">{fmt_tokens_count(total_raw_tok)}</span><span class="label">raw input across {len(rows)} fixtures ({fmt_bytes(total_raw)})</span></div>
+      <div class="stat-card"><span class="num">{fmt_tokens_count(total_tier1_tok)}</span><span class="label">tier1 total ({fmt_bytes(total_tier1)} — /handon Read target)</span></div>
       <div class="stat-card"><span class="num invariant-good">{fits_count}/{len(rows)}</span><span class="label">fixtures with tier1 ≤ 25 KB / ~6.25k tok cap</span></div>
       <div class="stat-card"><span class="num invariant-good">{total_signal}/{total_signal}</span><span class="label">signal user msgs preserved (of {total_user}; {noise_dropped} noise filtered)</span></div>
     </div>
@@ -361,7 +370,19 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fixtures", default=str(ROOT / "tests" / "fixtures" / "raw"))
     ap.add_argument("--out", default=str(ROOT / "docs" / "report.html"))
+    ap.add_argument(
+        "--token-mode",
+        choices=VALID_MODES,
+        default="auto",
+        help=(
+            "Tokenizer used for the report's token figures. 'auto' (default) "
+            "uses the offline HF tokenizer when available, else the chars/4 "
+            "heuristic. See compaction.tokenizer."
+        ),
+    )
     args = ap.parse_args()
+    global _TOKEN_MODE
+    _TOKEN_MODE = args.token_mode
 
     fdir = Path(args.fixtures)
     if not (fdir.is_dir() and any(fdir.glob("*.jsonl"))):
