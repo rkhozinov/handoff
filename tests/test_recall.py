@@ -86,6 +86,50 @@ def test_search_memories_swallows_garbage_json(monkeypatch):
     assert recall.search_memories("query") == []
 
 
+def test_search_memories_filters_below_min_score(monkeypatch):
+    """Hits below MIN_RECALL_SCORE (0.55 default) are noise. They must
+    not reach the brief — pinned by this test so the threshold can't
+    be silently dropped to 0 again."""
+    fake_out = json.dumps([
+        {"content_hash": "weakAAAAAAAAAAAA", "memory_type": "note",
+         "score": 0.30, "content": "barely related fact"},
+        {"content_hash": "strongBBBBBBBBBB", "memory_type": "decision",
+         "score": 0.85, "content": "tightly relevant decision"},
+        {"content_hash": "edgeCCCCCCCCCCCC", "memory_type": "note",
+         "score": 0.55, "content": "exactly at threshold"},
+    ])
+
+    class FakeProc:
+        returncode = 0
+        stdout = fake_out
+        stderr = ""
+
+    monkeypatch.setattr(recall.shutil, "which", lambda _: "/fake/memory")
+    monkeypatch.setattr(recall.subprocess, "run", lambda *a, **kw: FakeProc())
+    out = recall.search_memories("query")
+    assert len(out) == 2  # weak hit dropped, edge + strong kept
+    assert {h["content_hash"][:6] for h in out} == {"strong", "edgeCC"}
+
+
+def test_search_memories_min_score_zero_disables_filter(monkeypatch):
+    """`min_score=0` returns everything — escape hatch when callers
+    want raw recall."""
+    fake_out = json.dumps([
+        {"content_hash": "abc123def456789a", "memory_type": "note",
+         "score": 0.10, "content": "weak"},
+    ])
+
+    class FakeProc:
+        returncode = 0
+        stdout = fake_out
+        stderr = ""
+
+    monkeypatch.setattr(recall.shutil, "which", lambda _: "/fake/memory")
+    monkeypatch.setattr(recall.subprocess, "run", lambda *a, **kw: FakeProc())
+    out = recall.search_memories("query", min_score=0)
+    assert len(out) == 1
+
+
 # ---------- format_memory_line ----------
 
 def test_format_memory_line_basic():

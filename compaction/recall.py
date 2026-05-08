@@ -40,6 +40,17 @@ def project_tag_from_cwd(cwd: str) -> str:
     return f"project:{base}" if base else ""
 
 
+# Memory hits below this score don't carry enough relevance to justify
+# their tier1 line cost. Empirically, scores in [0.0, 0.5] surface
+# tangentially-related memories that crowd out higher-quality matches
+# from the brief.
+MIN_RECALL_SCORE = 0.55
+
+
+def _hit_score(mem: dict) -> float:
+    return float(mem.get("score") or mem.get("similarity") or 0)
+
+
 def search_memories(
     query: str,
     *,
@@ -47,9 +58,13 @@ def search_memories(
     limit: int = 5,
     timeout: float = 3.0,
     memory_bin: Optional[str] = None,
+    min_score: float = MIN_RECALL_SCORE,
 ) -> list[dict]:
     """Run `memory search` and return the parsed list. Empty list on any
-    failure (binary missing, timeout, JSON garbage, non-zero exit)."""
+    failure (binary missing, timeout, JSON garbage, non-zero exit).
+
+    Hits with score < `min_score` are filtered out — weak matches are
+    noise in the brief. Pass `min_score=0` to disable filtering."""
     if not query:
         return []
     bin_path = memory_bin or shutil.which("memory")
@@ -72,6 +87,8 @@ def search_memories(
         return []
     if not isinstance(data, list):
         return []
+    if min_score > 0:
+        data = [m for m in data if _hit_score(m) >= min_score]
     return data
 
 

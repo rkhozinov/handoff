@@ -456,7 +456,7 @@ def render_brief(
     """
     signal_msgs = iter_signal_user_msgs(entries)
     decisions = extract_decisions(signal_msgs)
-    files = extract_files_touched(entries)
+    files = extract_files_touched(entries, cwd=cwd)
     todos = extract_todo_snapshot(entries)
     plans = extract_plans_saved(entries)
     errors = extract_errors(entries)

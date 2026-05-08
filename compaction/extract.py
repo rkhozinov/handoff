@@ -314,9 +314,65 @@ def extract_decisions(user_msgs: list[str]) -> list[str]:
     return [m for m in user_msgs if REVERSAL_MARKERS.search(m) or DECISION_MARKERS.search(m)]
 
 
-def extract_files_touched(entries: Iterable[dict]) -> list[str]:
+# Paths under these prefixes are scratch/system noise — never carry resume
+# value. Filtered out of `extract_files_touched` regardless of cwd.
+_NOISE_PATH_PREFIXES = (
+    "/tmp/",
+    "/private/var/folders/",
+    "/private/tmp/",
+    "/var/folders/",
+    "/usr/",
+    "/bin/",
+    "/sbin/",
+    "/Library/",
+    "/System/",
+)
+# These ~-rooted paths are also session/tooling scratch.
+_NOISE_HOME_PREFIXES = (
+    "~/.claude/compaction/",
+    "~/.claude/projects/",
+    "~/.claude/tools/",
+    "~/.claude/cache/",
+)
+
+
+def _is_noise_path(p: str, cwd: str | None) -> bool:
+    """Return True if `p` is a scratch / system path that should be filtered
+    from `Files Touched`. Paths under `cwd` (when provided) are always kept;
+    everything else is checked against the noise prefix lists."""
+    if not p:
+        return True
+    if cwd:
+        # Normalize cwd (strip trailing slash, expand ~).
+        c = cwd.rstrip("/")
+        if c and (p == c or p.startswith(c + "/")):
+            return False
+        # Match against ~-relative form too.
+        import os as _os
+
+        home = _os.path.expanduser("~")
+        if home and c.startswith(home):
+            tilde = "~" + c[len(home):]
+            if p == tilde or p.startswith(tilde + "/"):
+                return False
+    if p.startswith(_NOISE_PATH_PREFIXES):
+        return True
+    if p.startswith(_NOISE_HOME_PREFIXES):
+        return True
+    return False
+
+
+def extract_files_touched(
+    entries: Iterable[dict], cwd: str | None = None
+) -> list[str]:
     """Deduped list of file paths from Read/Edit/Write tool_use + paths
-    appearing in Bash commands. Order = first occurrence."""
+    appearing in Bash commands. Order = first occurrence.
+
+    When `cwd` is supplied, paths under cwd are always kept and paths
+    matching the system/scratch noise prefixes (`/tmp/`, `/usr/`, etc.)
+    are dropped. When `cwd` is None, only the noise-prefix filter runs —
+    callers without cwd context still benefit from filtering the obvious
+    scratch dirs."""
     seen: dict[str, None] = {}
     bash_path_re = re.compile(r"(?:^|\s)((?:/|~/|\./)[\w./~+-]{2,})")
     for e in entries:
@@ -329,16 +385,17 @@ def extract_files_touched(entries: Iterable[dict]) -> list[str]:
             inp = b.get("input", {}) or {}
             if name in ("Read", "Edit", "Write"):
                 p = inp.get("file_path")
-                if p:
+                if p and not _is_noise_path(str(p), cwd):
                     seen.setdefault(str(p), None)
             elif name == "Grep":
                 p = inp.get("path")
-                if p:
+                if p and not _is_noise_path(str(p), cwd):
                     seen.setdefault(str(p), None)
             elif name == "Bash":
                 cmd = inp.get("command", "") or ""
                 for p in bash_path_re.findall(cmd):
-                    seen.setdefault(p, None)
+                    if not _is_noise_path(p, cwd):
+                        seen.setdefault(p, None)
     return list(seen.keys())
 
 
@@ -438,8 +495,36 @@ def _agent_report_text_from_tooluseresult(tur: object) -> str:
     return "\n".join(p for p in parts if p).strip()
 
 
+# Patterns that look like errors but carry zero diagnostic value once
+# isolated: bare exit codes from RTK / shell wrappers, single-token
+# "Error" or "Failed", etc. Filtering these stops the brief from
+# advertising "Errors Hit (5)" when none of them actually surface a fault.
+_EXIT_CODE_ONLY_RE = re.compile(
+    r"^\s*(?:Exit code\s*\d+|Error\s+code\s*\d+|Failed\.?|Error\.?)\s*$",
+    re.IGNORECASE,
+)
+_ERROR_MIN_BODY_CHARS = 20
+
+
+def _is_diagnostic_error(text: str) -> bool:
+    """Reject error snippets that have no stderr / message body. We require
+    at least `_ERROR_MIN_BODY_CHARS` of content AND not match the
+    exit-code-only pattern. Real diagnostic errors (tracebacks, stderr
+    lines, structured "Error: <reason>" prose) survive."""
+    s = text.strip()
+    if len(s) < _ERROR_MIN_BODY_CHARS:
+        return False
+    if _EXIT_CODE_ONLY_RE.match(s):
+        return False
+    return True
+
+
 def extract_errors(entries: Iterable[dict], limit: int = 5, snippet_len: int = 300) -> list[str]:
-    """Last N error-like tool_result snippets."""
+    """Last N error-like tool_result snippets with a real diagnostic body.
+
+    Bodies under `_ERROR_MIN_BODY_CHARS` (default 20) and pure exit-code
+    patterns are dropped — they carry no resume value and clutter tier1
+    with "Errors Hit (5)" headers that contain only `Exit code 1`."""
     errs: list[str] = []
     for e in entries:
         if e.get("type") != "user":
@@ -463,8 +548,11 @@ def extract_errors(entries: Iterable[dict], limit: int = 5, snippet_len: int = 3
                 text = tc
             if not text:
                 continue
-            if ERROR_MARKERS.search(text) or b.get("is_error"):
-                errs.append(text.strip()[:snippet_len])
+            if not (ERROR_MARKERS.search(text) or b.get("is_error")):
+                continue
+            if not _is_diagnostic_error(text):
+                continue
+            errs.append(text.strip()[:snippet_len])
     return errs[-limit:]
 
 

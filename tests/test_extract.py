@@ -190,6 +190,56 @@ def test_files_touched_dedup_preserves_first_order():
     assert extract.extract_files_touched(entries) == ["/x", "/y"]
 
 
+def test_files_touched_filters_scratch_paths_default():
+    """Even without cwd, /tmp /usr /private/var should be filtered as
+    universal noise."""
+    entries = [
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/scratch.txt"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/usr/bin/wc"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/private/var/folders/foo"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Edit", "input": {"file_path": "/repo/src/main.py"}}]),
+    ]
+    files = extract.extract_files_touched(entries)
+    assert files == ["/repo/src/main.py"]
+
+
+def test_files_touched_keeps_paths_under_cwd():
+    """When cwd is provided, paths under cwd survive even if they would
+    otherwise hit a noise prefix (rare — but happens with cwd in /tmp)."""
+    entries = [
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/repo/main.py"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/other/scratch.txt"}}]),
+    ]
+    files = extract.extract_files_touched(entries, cwd="/tmp/repo")
+    # /tmp/repo/main.py is under cwd → kept; /tmp/other/scratch.txt is not.
+    assert files == ["/tmp/repo/main.py"]
+
+
+def test_files_touched_drops_outside_cwd_when_cwd_set():
+    """With cwd=/repo/proj, paths outside that subtree (and outside system
+    noise) should still flow through — only paths matching noise prefixes
+    are filtered. This pins the conservative-filter contract: cwd is a
+    *whitelist boost*, not an exclusive filter."""
+    entries = [
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/repo/proj/foo.py"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/repo/other/bar.py"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/x"}}]),
+    ]
+    files = extract.extract_files_touched(entries, cwd="/repo/proj")
+    assert files == ["/repo/proj/foo.py", "/repo/other/bar.py"]
+
+
+def test_files_touched_filters_compaction_scratch():
+    """Brief output and project transcripts must not appear in Files Touched."""
+    entries = [
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "~/.claude/compaction/foo.md"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Read", "input": {"file_path": "~/.claude/projects/x/y.jsonl"}}]),
+        _assistant_blocks([{"type": "tool_use", "name": "Edit", "input": {"file_path": "~/repos/proj/code.py"}}]),
+    ]
+    files = extract.extract_files_touched(entries)
+    assert files == ["~/repos/proj/code.py"]
+
+
 # ---------- errors ----------
 
 def test_extract_errors_finds_traceback():
@@ -214,12 +264,19 @@ def test_extract_errors_caps_at_limit():
     for i in range(20):
         entries.append(
             _user_blocks(
-                [{"type": "tool_result", "tool_use_id": str(i), "content": f"error {i}"}]
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": str(i),
+                        # Body must be >= 20 chars to survive the body-min filter
+                        "content": f"error happened at iteration {i} with reason xyz",
+                    }
+                ]
             )
         )
     errs = extract.extract_errors(entries, limit=3)
     assert len(errs) == 3
-    assert "error 19" in errs[-1]
+    assert "iteration 19" in errs[-1]
 
 
 def test_extract_errors_ignores_clean_output():
@@ -227,6 +284,44 @@ def test_extract_errors_ignores_clean_output():
         _user_blocks([{"type": "tool_result", "tool_use_id": "ok", "content": "all good"}])
     ]
     assert extract.extract_errors(entries) == []
+
+
+def test_extract_errors_drops_exit_code_only():
+    """Pure `Exit code N` results from RTK / shell wrappers carry no
+    diagnostic value — must not surface in `Errors Hit`."""
+    entries = [
+        _user_blocks([{"type": "tool_result", "tool_use_id": "1", "content": "Exit code 1"}]),
+        _user_blocks([{"type": "tool_result", "tool_use_id": "2", "content": "Exit code 127"}]),
+        _user_blocks([{"type": "tool_result", "tool_use_id": "3", "content": "Failed"}]),
+    ]
+    assert extract.extract_errors(entries) == []
+
+
+def test_extract_errors_drops_short_bodies():
+    """Bodies under the 20-char minimum are noise."""
+    entries = [
+        _user_blocks([{"type": "tool_result", "tool_use_id": "a", "content": "error", "is_error": True}]),
+        _user_blocks([{"type": "tool_result", "tool_use_id": "b", "content": "fail.", "is_error": True}]),
+    ]
+    assert extract.extract_errors(entries) == []
+
+
+def test_extract_errors_keeps_real_diagnostic():
+    """Diagnostic bodies (>= 20 chars, not exit-code patterns) survive."""
+    entries = [
+        _user_blocks(
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "x",
+                    "content": "Error: connection refused on port 5432 from postgres client",
+                }
+            ]
+        )
+    ]
+    errs = extract.extract_errors(entries)
+    assert len(errs) == 1
+    assert "connection refused" in errs[0]
 
 
 # ---------- code anchors ----------
