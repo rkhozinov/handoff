@@ -35,17 +35,41 @@ Decision tree based on the script's stdout:
   otherwise infer.
 
 * `BRIEF_MISSING ...` printed → no /handoff was ever run for this
-  session. Fall back: list recent briefs and ask the user which one
-  to load:
+  session. Fall back: render an enriched list of recent briefs so the
+  user can pick the right one based on cwd, active goal, and open
+  question — not just the session id.
+
+  Run this single block; it walks the 10 newest non-consumed briefs
+  and emits one structured stanza per brief:
 
   ```bash
-  ls -lt "$HOME/.claude/compaction/"*.md 2>/dev/null \
-    | grep -v -E 'consumed-|-full\.md$' \
-    | head -10
+  printf 'Recent briefs (newest first). Reply with the number or the session id of the brief to load.\n\n'
+  i=0
+  # Only list session-id briefs (UUID-shaped basenames). Filters out
+  # legacy `latest-<slug>` symlinks, `consumed-*`, `-full.md`, and any
+  # test fixture names like `prev-session-test.md`.
+  for f in $(ls -t "$HOME/.claude/compaction/"*.md 2>/dev/null \
+              | grep -E '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$' \
+              | grep -v -E '/consumed-|-full\.md$'); do
+    i=$((i+1))
+    [ "$i" -gt 10 ] && break
+    sid=$(basename "$f" .md)
+    age=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f" 2>/dev/null \
+          || stat -c '%y' "$f" 2>/dev/null | cut -c1-16)
+    size=$(wc -c <"$f" | tr -d ' ')
+    cwd=$(grep -m1 '^\*\*Cwd:\*\*' "$f" | sed 's/.*`\(.*\)`.*/\1/')
+    goal=$(awk '/^## Active Goal/{flag=1;next} /^##/{flag=0} flag && NF{print; exit}' "$f")
+    openq=$(awk '/^## Open Question/{flag=1;next} /^##/{flag=0} flag && NF{print; exit}' "$f")
+    printf '%2d. %s  (%s, %s bytes)\n' "$i" "$sid" "$age" "$size"
+    [ -n "$cwd" ]   && printf '    cwd:  %s\n' "$cwd"
+    [ -n "$goal" ]  && printf '    goal: %s\n' "$goal"
+    [ -n "$openq" ] && printf '    open: %s\n' "$openq"
+    printf '\n'
+  done
   ```
 
-  Show the list with each brief's first-line `# Session Brief — <ts>`
-  header for context (`head -1 <file>` per brief).
+  Then ask the user "Which brief?" — accept either the number from the
+  list or a session id prefix. Read that file with the Read tool.
 
 After loading, print one line confirming what was restored:
 `Restored: <session_id> from <ts>, <N> decisions`.
