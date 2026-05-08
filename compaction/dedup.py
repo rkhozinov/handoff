@@ -31,7 +31,7 @@ def _load_model():
 
 def semantic_dedup(
     convo: list[tuple[str, str]],
-    threshold: float = 0.95,
+    threshold: float = 0.99,
     window: int = 10,
     return_drops: bool = False,
 ) -> tuple[list[tuple[str, str]], int] | tuple[

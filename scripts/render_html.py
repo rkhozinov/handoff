@@ -399,7 +399,7 @@ def render_dedup_audit_html(entries: list[dict]) -> str:
         return (
             '<p style="color:#8b949e">'
             f"No semantic drops on this fixture (convo has {len(convo)} "
-            "post-collapse turns). Threshold 0.95, window 10, min-len 30."
+            "post-collapse turns). Threshold 0.99, window 10, min-len 30."
             "</p>"
         )
     cards: list[str] = []
@@ -419,8 +419,8 @@ def render_dedup_audit_html(entries: list[dict]) -> str:
     return (
         f'<p style="color:#8b949e">'
         f"<strong>{dropped}</strong> drops out of {len(convo)} post-collapse turns. "
-        f"Threshold 0.95, window 10, min-len 30 chars. "
-        f"<em>Review each card: cos≥0.95 should mean a near-paraphrased retry. "
+        f"Threshold 0.99, window 10, min-len 30 chars. "
+        f"<em>Review each card: cos≥0.99 should mean a near-paraphrased retry. "
         f"If you see a semantically distinct turn collapsed, the threshold is too low.</em>"
         f"</p>"
         f'{"".join(cards)}'

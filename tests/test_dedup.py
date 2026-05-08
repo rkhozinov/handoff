@@ -60,15 +60,15 @@ def test_no_op_when_model2vec_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_paraphrased_adjacent_assistant_dropped() -> None:
     """When the embedding stack is available, two near-paraphrased adjacent
-    assistant turns should collapse to one. (Retry-with-suffix pattern is
-    one of the highest-similarity real-world cases — ~0.95.)"""
+    assistant turns should collapse to one. Picked a punctuation-tweak pair
+    that lands ~0.9998 — clears the safe 0.99 default."""
     pytest.importorskip("model2vec")
     pytest.importorskip("numpy")
     convo = [
-        ("assistant", "error: connection refused on port 5432 from postgres client"),
-        ("assistant", "error: connection refused on port 5432 from postgres client (retry 1)"),
+        ("assistant", "the user reports that the API endpoint returns 500 errors intermittently"),
+        ("assistant", "the user reports that the API endpoint returns 500 errors intermittently!"),
     ]
-    out, dropped = semantic_dedup(convo, threshold=0.95)
+    out, dropped = semantic_dedup(convo)  # default threshold 0.99
     assert dropped == 1
     assert len(out) == 1
 
@@ -95,7 +95,7 @@ def test_distinct_turns_preserved() -> None:
         ("assistant", "[Bash kubectl get pods -n production --selector app=api]"),
         ("assistant", "[Read /Users/me/repo/src/main.py]"),
     ]
-    out, dropped = semantic_dedup(convo, threshold=0.90)
+    out, dropped = semantic_dedup(convo, threshold=0.95)
     assert dropped == 0
     assert len(out) == 2
 
@@ -127,14 +127,16 @@ def test_different_roles_never_collapse() -> None:
     assert len(out) == 2
 
 
-def test_high_threshold_keeps_paraphrase() -> None:
-    """Threshold knob: at 0.99 even close paraphrases survive."""
+def test_below_default_threshold_keeps_paraphrase() -> None:
+    """Threshold knob: looser paraphrases (cos ~0.95) survive the default
+    0.99 threshold. The dedup_audit fixture sweep showed 0.95 is unsafe
+    (drops up to 13 files on xhuge), so 0.99 is now the default."""
     pytest.importorskip("model2vec")
     pytest.importorskip("numpy")
     convo = [
         ("assistant", "error: connection refused on port 5432 from postgres client"),
         ("assistant", "error: connection refused on port 5432 from postgres client (retry 1)"),
     ]
-    out, dropped = semantic_dedup(convo, threshold=0.99)
+    out, dropped = semantic_dedup(convo)  # default 0.99
     assert dropped == 0
     assert len(out) == 2
