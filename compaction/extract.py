@@ -701,6 +701,34 @@ def _last_assistant_texts(entries: list[dict], n: int) -> list[str]:
     return list(reversed(out))
 
 
+def extract_compact_summaries(entries: Iterable[dict]) -> list[str]:
+    """Return each Claude Code default `/compact` summary text in order.
+
+    These are user-typed entries flagged with `isCompactSummary: true`,
+    written by CC's LLM summarizer when the session was compacted. Used
+    by the report's tier1-vs-CC comparison panel — comparing our
+    deterministic brief against the lossy paraphrased baseline that
+    motivated this whole project."""
+    out: list[str] = []
+    for e in entries:
+        if not e.get("isCompactSummary"):
+            continue
+        msg = e.get("message", {})
+        c = msg.get("content")
+        text = ""
+        if isinstance(c, str):
+            text = c
+        elif isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    text = b.get("text", "")
+                    break
+        text = (text or "").strip()
+        if text:
+            out.append(text)
+    return out
+
+
 def extract_open_question(entries: Iterable[dict]) -> str | None:
     """Find the last unresolved question in the assistant transcript.
 

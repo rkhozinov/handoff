@@ -718,6 +718,43 @@ def test_extract_plans_saved_picks_up_singular_plan_dir():
     assert extract.extract_plans_saved([e]) == ["/p/plan/a.md"]
 
 
+# ---------- compact summaries ----------
+
+def _compact_summary(text: str) -> dict:
+    return {
+        "type": "user",
+        "isCompactSummary": True,
+        "message": {"role": "user", "content": text},
+    }
+
+
+def test_extract_compact_summaries_basic():
+    a = _compact_summary("This session is being continued from a previous conversation...\n\nSummary: ...")
+    b = _user_str("regular user message")
+    c = _compact_summary("Another summary block here")
+    out = extract.extract_compact_summaries([a, b, c])
+    assert len(out) == 2
+    assert "previous conversation" in out[0]
+    assert "Another summary" in out[1]
+
+
+def test_extract_compact_summaries_skips_non_summary():
+    """`isCompactSummary` flag is required; presence of other user msgs
+    must not pollute the output."""
+    e = _user_str("not a compact summary, just a normal user msg")
+    assert extract.extract_compact_summaries([e]) == []
+
+
+def test_extract_compact_summaries_handles_blocks_content():
+    """Content can also arrive as a list of blocks (older CC format)."""
+    e = {
+        "type": "user",
+        "isCompactSummary": True,
+        "message": {"role": "user", "content": [{"type": "text", "text": "block-form summary"}]},
+    }
+    assert extract.extract_compact_summaries([e]) == ["block-form summary"]
+
+
 # ---------- open question ----------
 
 def test_extract_open_question_finds_last_question_mark():

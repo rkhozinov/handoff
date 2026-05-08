@@ -13,6 +13,7 @@ from pathlib import Path
 from compaction.extract import (
     assistant_blocks,
     extract_code_anchors,
+    extract_compact_summaries,
     extract_decisions,
     extract_errors,
     extract_files_touched,
@@ -400,6 +401,73 @@ def _format_brief_pane(text: str, label: str, byte_count: int, tok_count: int) -
     )
 
 
+def render_cc_compact_compare_html(entries: list[dict], label: str) -> str:
+    """Side-by-side: our tier1 vs Claude Code's default `/compact` summary.
+
+    The comparison only renders for fixtures that actually carry a CC
+    `/compact` run (`isCompactSummary: true` user entries). Sessions
+    without that flag get a placeholder noting CC's summarizer never
+    ran on this fixture — common for fresh sessions.
+
+    The point of this panel is to make the original motivation for the
+    project visible: our deterministic brief vs the lossy LLM
+    summarization that loses file paths, paraphrases code, and forgets
+    direction reversals."""
+    summaries = extract_compact_summaries(entries)
+    tier1, _ = render_brief(
+        entries, label, "/demo", archive_hash="abcd1234ef56...",
+        tier2_path="/demo/session-full.md",
+    )
+    t1_bytes = len(tier1.encode("utf-8"))
+    t1_tok = count_tokens(tier1, mode=_TOKEN_MODE)
+
+    if not summaries:
+        return (
+            f'<p style="color:#8b949e">'
+            f"This fixture didn't run CC's default <code>/compact</code> — "
+            f"no <code>isCompactSummary: true</code> entries in the JSONL. "
+            f"(Our tier1 is shown below for reference; the right pane "
+            f"would normally hold CC's LLM-generated summary.)"
+            f'</p>'
+            f'<div class="diff-grid">'
+            f'{_format_brief_pane(tier1, "OUR TIER1 (deterministic)", t1_bytes, t1_tok)}'
+            f'<div class="diff-col"><h3>CC /compact summary <span style="color:#8b949e;font-weight:normal;font-size:0.85em;">(not present)</span></h3>'
+            f'<pre class="pre" style="max-height:80vh;overflow:auto;color:#8b949e;">'
+            f'No /compact summary in this fixture. Run /compact in a real '
+            f'session to populate this pane on the next bench.</pre></div>'
+            f'</div>'
+        )
+
+    # Show the most recent CC summary (last in chronological order).
+    cc_text = summaries[-1]
+    cc_bytes = len(cc_text.encode("utf-8"))
+    cc_tok = count_tokens(cc_text, mode=_TOKEN_MODE)
+    summary_count_line = (
+        f"This fixture ran CC's <code>/compact</code> "
+        f"<strong>{len(summaries)}</strong> "
+        f"time{'s' if len(summaries) != 1 else ''}; the most recent summary is "
+        f"shown on the right. Compare against our tier1 on the left:"
+    )
+    return (
+        f'<p style="color:#8b949e">{summary_count_line}</p>'
+        f'<ul style="color:#8b949e;font-size:0.92em;line-height:1.7;">'
+        f'<li>CC summary is <strong>LLM-generated</strong> prose — paraphrases '
+        f'code, drops file paths, forgets direction reversals. Token cost varies '
+        f'with session length but typically 1-3k tokens.</li>'
+        f'<li>Our tier1 is <strong>deterministic extraction</strong> — preserves '
+        f'verbatim user msgs, file paths, decision verbs, code anchors. No LLM '
+        f'call.</li>'
+        f'<li>Look for: file paths missing on the right, decisions paraphrased '
+        f'or merged on the right, "direction reversal" user messages dropped '
+        f'on the right.</li>'
+        f'</ul>'
+        f'<div class="diff-grid">'
+        f'{_format_brief_pane(tier1, "OUR TIER1 (deterministic)", t1_bytes, t1_tok)}'
+        f'{_format_brief_pane(cc_text, "CC /compact (LLM summary)", cc_bytes, cc_tok)}'
+        f'</div>'
+    )
+
+
 def render_tier_compare_html(entries: list[dict], label: str) -> str:
     """Side-by-side tier1 vs tier2 for manual redundancy audit.
 
@@ -497,12 +565,14 @@ def main() -> int:
     diff_templates: list[str] = []
     brief_templates: list[str] = []
     tier_cmp_templates: list[str] = []
+    cc_cmp_templates: list[str] = []
     options: list[str] = []
     for f in fixtures:
         entries = load_jsonl(str(f))
         d_html = build_diff_html(entries, max_turns=None)
         b_html = render_brief_html(entries, f.stem)
         cmp_html = render_tier_compare_html(entries, f.stem)
+        cc_html = render_cc_compact_compare_html(entries, f.stem)
         sel = " selected" if f.stem == default_fixture else ""
         stem = html.escape(f.stem)
         diff_templates.append(
@@ -517,6 +587,9 @@ def main() -> int:
         )
         tier_cmp_templates.append(
             f'<template id="fix-tiercmp-{stem}" data-fixture="{stem}">{cmp_html}</template>'
+        )
+        cc_cmp_templates.append(
+            f'<template id="fix-cccmp-{stem}" data-fixture="{stem}">{cc_html}</template>'
         )
         options.append(
             f'<option value="{stem}"{sel}>{stem}</option>'
@@ -540,6 +613,7 @@ def main() -> int:
   var diffActive = document.getElementById("diff-active");
   var briefActive = document.getElementById("brief-active");
   var tierCmpActive = document.getElementById("tiercmp-active");
+  var ccCmpActive = document.getElementById("cccmp-active");
   if (!diffActive || !briefActive) return;
 
   function bindScrollSync(scope) {
@@ -600,8 +674,16 @@ def main() -> int:
         tierCmpActive.dataset.fixture = name;
       }
     }
+    if (ccCmpActive) {
+      var ccCmpTpl = document.getElementById("fix-cccmp-" + name);
+      if (ccCmpTpl) {
+        ccCmpActive.replaceChildren(ccCmpTpl.content.cloneNode(true));
+        ccCmpActive.dataset.fixture = name;
+      }
+    }
     bindScrollSync(diffActive);
     bindScrollSync(tierCmpActive || document.body);
+    bindScrollSync(ccCmpActive || document.body);
     // Re-apply persisted flag state to the freshly attached turns.
     if (window.__compactionRefreshFlags) window.__compactionRefreshFlags();
   }
@@ -798,6 +880,25 @@ def main() -> int:
   and what <code>/handon</code> reads back into the next session (head, capped at 25 KB):</p>
   {"".join(brief_templates)}
   <div id="brief-active"></div>
+</section>
+
+<section>
+  <h2>Our tier1 vs Claude Code's <code>/compact</code> (the original motivation)</h2>
+  <p style="color:#8b949e">
+    The whole point of this project is that CC's default
+    <code>/compact</code> runs an LLM summarizer over the session
+    that paraphrases code, drops file paths, and forgets direction
+    reversals. Our brief is deterministic extraction — no LLM call,
+    no paraphrasing.
+  </p>
+  <p style="color:#8b949e">
+    Compare panes for fixtures that actually carry a CC summary
+    (<code>isCompactSummary: true</code> entries in the JSONL).
+    Eyeball the right pane for: missing file paths, paraphrased
+    decisions, dropped reversal user msgs.
+  </p>
+  {"".join(cc_cmp_templates)}
+  <div id="cccmp-active"></div>
 </section>
 
 <section>
