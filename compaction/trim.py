@@ -367,6 +367,75 @@ def _render_tier2(
     return "\n".join(out) + "\n"
 
 
+def build_convo(entries: list[dict]) -> list[tuple[str, str]]:
+    """Run the trimmer's convo-build phase and return `(role, text)` tuples
+    after `_collapse_repeats` but BEFORE semantic dedup. Exposed so the
+    audit / debug path (`render_html` dedup section) can replay the exact
+    same convo without re-rendering both tiers."""
+    agent_use_meta: dict[str, tuple[str, str]] = {}
+    for e in entries:
+        if e.get("type") != "assistant":
+            continue
+        for b in assistant_blocks(e):
+            if b.get("type") == "tool_use" and b.get("name") in SUBAGENT_TOOL_NAMES:
+                inp = b.get("input") or {}
+                agent_use_meta[str(b.get("id") or "")] = (
+                    str(inp.get("description") or ""),
+                    str(inp.get("subagent_type") or ""),
+                )
+
+    seen_user: set[str] = set()
+    seen_paths: set[str] = set()
+    convo: list[tuple[str, str]] = []
+    for i, e in enumerate(entries):
+        nxt = entries[i + 1] if i + 1 < len(entries) else None
+        if e.get("type") in DROP_TOP_TYPES:
+            continue
+        if is_real_user(e):
+            t = user_text(e)
+            if not t or is_noise_user_msg(t):
+                continue
+            t = elide_pasted_output(t)
+            if t in seen_user:
+                continue
+            seen_user.add(t)
+            convo.append(("user", t))
+        elif e.get("type") == "user":
+            c = e.get("message", {}).get("content")
+            if isinstance(c, list):
+                from compaction.extract import _agent_report_text_from_tooluseresult
+
+                tur_text = _agent_report_text_from_tooluseresult(e.get("toolUseResult"))
+                for b in c:
+                    if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                        continue
+                    meta = agent_use_meta.get(str(b.get("tool_use_id") or ""))
+                    if not meta:
+                        continue
+                    text = tur_text
+                    if not text:
+                        tc = b.get("content")
+                        if isinstance(tc, list):
+                            text = "\n".join(
+                                blk.get("text", "")
+                                for blk in tc
+                                if isinstance(blk, dict) and blk.get("type") == "text"
+                            )
+                        elif isinstance(tc, str):
+                            text = tc
+                    text = (text or "").strip()
+                    if len(text) >= 200:
+                        desc = meta[0] or "(no description)"
+                        sub = f" {meta[1]}" if meta[1] else ""
+                        convo.append(("assistant", f"[Sub-agent report:{sub} {desc}]\n{text}"))
+        elif e.get("type") == "assistant":
+            r = render_assistant(e, nxt, seen_paths=seen_paths)
+            if r:
+                convo.append(("assistant", r))
+
+    return _collapse_repeats(convo)
+
+
 def render_brief(
     entries: list[dict],
     session_id: str,
@@ -397,77 +466,7 @@ def render_brief(
     agent_reports_tier1 = extract_agent_reports(entries, max_chars=1500)
     agent_reports_tier2 = extract_agent_reports(entries, max_chars=0)
 
-    # Build a map of Agent/Task tool_use_id → (description, subagent_type) so
-    # we can splice the synthesized report text into tier2 immediately after
-    # the assistant turn that dispatched the sub-agent.
-    agent_use_meta: dict[str, tuple[str, str]] = {}
-    for e in entries:
-        if e.get("type") != "assistant":
-            continue
-        for b in assistant_blocks(e):
-            if b.get("type") == "tool_use" and b.get("name") in SUBAGENT_TOOL_NAMES:
-                inp = b.get("input") or {}
-                agent_use_meta[str(b.get("id") or "")] = (
-                    str(inp.get("description") or ""),
-                    str(inp.get("subagent_type") or ""),
-                )
-
-    seen_user: set[str] = set()
-    seen_paths: set[str] = set()
-    convo: list[tuple[str, str]] = []
-    for i, e in enumerate(entries):
-        nxt = entries[i + 1] if i + 1 < len(entries) else None
-        if e.get("type") in DROP_TOP_TYPES:
-            # file-history-snapshot, attachments, etc. — never in the brief.
-            continue
-        if is_real_user(e):
-            t = user_text(e)
-            if not t or is_noise_user_msg(t):
-                continue
-            t = elide_pasted_output(t)
-            if t in seen_user:
-                continue
-            seen_user.add(t)
-            convo.append(("user", t))
-        elif e.get("type") == "user":
-            # Synthetic user wrap holding a tool_result. Normally dropped, but
-            # if it carries an Agent/Task report, inline it as a synthetic
-            # assistant turn so tier2 keeps the synthesized findings.
-            c = e.get("message", {}).get("content")
-            if isinstance(c, list):
-                # Prefer the cleaner top-level toolUseResult.content over the
-                # inline message.content[].content[].text (which carries
-                # trailing UI noise like `agentId: ...` and `<usage>`).
-                from compaction.extract import _agent_report_text_from_tooluseresult
-                tur_text = _agent_report_text_from_tooluseresult(e.get("toolUseResult"))
-                for b in c:
-                    if not (isinstance(b, dict) and b.get("type") == "tool_result"):
-                        continue
-                    meta = agent_use_meta.get(str(b.get("tool_use_id") or ""))
-                    if not meta:
-                        continue
-                    text = tur_text
-                    if not text:
-                        tc = b.get("content")
-                        if isinstance(tc, list):
-                            text = "\n".join(
-                                blk.get("text", "")
-                                for blk in tc
-                                if isinstance(blk, dict) and blk.get("type") == "text"
-                            )
-                        elif isinstance(tc, str):
-                            text = tc
-                    text = (text or "").strip()
-                    if len(text) >= 200:
-                        desc = meta[0] or "(no description)"
-                        sub = f" {meta[1]}" if meta[1] else ""
-                        convo.append(("assistant", f"[Sub-agent report:{sub} {desc}]\n{text}"))
-        elif e.get("type") == "assistant":
-            r = render_assistant(e, nxt, seen_paths=seen_paths)
-            if r:
-                convo.append(("assistant", r))
-
-    convo = _collapse_repeats(convo)
+    convo = build_convo(entries)
 
     if semantic_dedup:
         from compaction.dedup import semantic_dedup as _sem_dedup

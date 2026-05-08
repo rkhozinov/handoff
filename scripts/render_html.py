@@ -23,7 +23,7 @@ from compaction.extract import (
     user_text,
 )
 from compaction.tokenizer import VALID_MODES, count_tokens
-from compaction.trim import _classify_assistant, render_assistant, render_brief
+from compaction.trim import _classify_assistant, build_convo, render_assistant, render_brief
 
 # Filled in by main() once CLI args are parsed; defaults to "auto" so the
 # helpers also work when imported directly from a test or REPL.
@@ -374,6 +374,59 @@ def render_stats_table(rows: list[dict]) -> str:
     return "".join(out)
 
 
+def render_dedup_audit_html(entries: list[dict]) -> str:
+    """For manual validation: run semantic_dedup against the post-collapse
+    convo and emit one card per drop, showing prev / curr text and the
+    cosine score that triggered the drop. Reviewer eyeballs each card and
+    decides whether the drop was correct (paraphrased retry) or wrong
+    (semantically distinct turn collapsed by the static-embedding model).
+    No-op if `model2vec` / `numpy` aren't installed."""
+    from compaction.dedup import semantic_dedup as _sem_dedup
+
+    convo = build_convo(entries)
+    out = _sem_dedup(convo, return_drops=True)
+    if len(out) != 3:
+        # numpy / model2vec missing → silent no-op (defensive; the
+        # 2-tuple shape never occurs once `return_drops=True` is honored).
+        return (
+            '<p style="color:#8b949e">'
+            "Semantic dedup unavailable (install <code>model2vec</code> + "
+            "<code>numpy</code> for this section)."
+            "</p>"
+        )
+    _convo, dropped, drops = out
+    if dropped == 0:
+        return (
+            '<p style="color:#8b949e">'
+            f"No semantic drops on this fixture (convo has {len(convo)} "
+            "post-collapse turns). Threshold 0.95, window 10, min-len 30."
+            "</p>"
+        )
+    cards: list[str] = []
+    for d in drops:
+        cos = d["cos"]
+        prev = html.escape(truncate(d["prev"], 1500))
+        curr = html.escape(truncate(d["curr"], 1500))
+        cards.append(
+            f'<div class="turn turn-tool-use">'
+            f'<span class="turn-label label-tool-use">'
+            f'DEDUP DROP @i={d["i"]} cos={cos:.3f}'
+            f'</span>'
+            f'<pre class="pre"><strong>prev:</strong>\n{prev}\n\n'
+            f'<strong>curr (dropped):</strong>\n{curr}</pre>'
+            f"</div>"
+        )
+    return (
+        f'<p style="color:#8b949e">'
+        f"<strong>{dropped}</strong> drops out of {len(convo)} post-collapse turns. "
+        f"Threshold 0.95, window 10, min-len 30 chars. "
+        f"<em>Review each card: cos≥0.95 should mean a near-paraphrased retry. "
+        f"If you see a semantically distinct turn collapsed, the threshold is too low.</em>"
+        f"</p>"
+        f'{"".join(cards)}'
+    )
+
+
 def render_brief_html(entries: list[dict], label: str) -> str:
     tier1, _ = render_brief(entries, label, "/demo", archive_hash="abcd1234ef56...", tier2_path="/demo/session-full.md")
     escaped = html.escape(tier1)
@@ -447,11 +500,13 @@ def main() -> int:
     # template, so only one fixture's DOM is "live" at a time.
     diff_templates: list[str] = []
     brief_templates: list[str] = []
+    dedup_templates: list[str] = []
     options: list[str] = []
     for f in fixtures:
         entries = load_jsonl(str(f))
         d_html = build_diff_html(entries, max_turns=None)
         b_html = render_brief_html(entries, f.stem)
+        ded_html = render_dedup_audit_html(entries)
         sel = " selected" if f.stem == default_fixture else ""
         stem = html.escape(f.stem)
         diff_templates.append(
@@ -463,6 +518,9 @@ def main() -> int:
         )
         brief_templates.append(
             f'<template id="fix-brief-{stem}" data-fixture="{stem}">{b_html}</template>'
+        )
+        dedup_templates.append(
+            f'<template id="fix-dedup-{stem}" data-fixture="{stem}">{ded_html}</template>'
         )
         options.append(
             f'<option value="{stem}"{sel}>{stem}</option>'
@@ -485,6 +543,7 @@ def main() -> int:
   if (!sel) return;
   var diffActive = document.getElementById("diff-active");
   var briefActive = document.getElementById("brief-active");
+  var dedupActive = document.getElementById("dedup-active");
   if (!diffActive || !briefActive) return;
 
   function bindScrollSync(scope) {
@@ -538,6 +597,13 @@ def main() -> int:
     briefActive.replaceChildren(briefTpl.content.cloneNode(true));
     diffActive.dataset.fixture = name;
     briefActive.dataset.fixture = name;
+    if (dedupActive) {
+      var dedupTpl = document.getElementById("fix-dedup-" + name);
+      if (dedupTpl) {
+        dedupActive.replaceChildren(dedupTpl.content.cloneNode(true));
+        dedupActive.dataset.fixture = name;
+      }
+    }
     bindScrollSync(diffActive);
     // Re-apply persisted flag state to the freshly attached turns.
     if (window.__compactionRefreshFlags) window.__compactionRefreshFlags();
@@ -735,6 +801,22 @@ def main() -> int:
   and what <code>/handon</code> reads back into the next session (head, capped at 25 KB):</p>
   {"".join(brief_templates)}
   <div id="brief-active"></div>
+</section>
+
+<section>
+  <h2>Semantic dedup audit (manual validation)</h2>
+  <p style="color:#8b949e">
+    The <code>--semantic-dedup</code> flag (off by default) runs Model2Vec
+    cosine similarity over post-collapse assistant turns and drops
+    near-paraphrased adjacent retries that exact-match dedup misses.
+    Each card below is a candidate drop — eyeball <strong>prev</strong> vs
+    <strong>curr (dropped)</strong>: a good drop = same semantic intent,
+    minor flag/wording tweak. A bad drop = semantically distinct turn
+    collapsed by static-embedding bag-of-words. User turns are NEVER
+    dropped (pure signal).
+  </p>
+  {"".join(dedup_templates)}
+  <div id="dedup-active"></div>
 </section>
 
 <section>

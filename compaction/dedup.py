@@ -33,8 +33,12 @@ def semantic_dedup(
     convo: list[tuple[str, str]],
     threshold: float = 0.95,
     window: int = 10,
-) -> tuple[list[tuple[str, str]], int]:
-    """Return `(deduped_convo, dropped_count)`.
+    return_drops: bool = False,
+) -> tuple[list[tuple[str, str]], int] | tuple[
+    list[tuple[str, str]], int, list[dict]
+]:
+    """Return `(deduped_convo, dropped_count)` (or `(convo, count, drops)`
+    when `return_drops=True`).
 
     Drops an *assistant* turn when its embedding cosine-similarity to one
     of the prior `window` kept assistant turns is >= `threshold`. User
@@ -44,17 +48,22 @@ def semantic_dedup(
     through untouched (static embeddings are unreliable on short strings —
     `kubectl get pods -n prod` vs `-n stage` is 0.93).
 
-    No-op (returns input, 0) when `model2vec` / `numpy` not installed.
+    When `return_drops=True`, the third element is a list of dicts:
+      `{"i": int, "cos": float, "prev": str, "curr": str}`
+    one per dropped turn, for manual audit / debug rendering.
+
+    No-op (returns input, 0[, []]) when `model2vec` / `numpy` not installed.
     """
+    drops: list[dict] = []
     if len(convo) < 2:
-        return convo, 0
+        return (convo, 0, drops) if return_drops else (convo, 0)
     try:
         import numpy as np  # type: ignore
     except ImportError:
-        return convo, 0
+        return (convo, 0, drops) if return_drops else (convo, 0)
     model = _load_model()
     if model is None:
-        return convo, 0
+        return (convo, 0, drops) if return_drops else (convo, 0)
 
     texts = [t for _, t in convo]
     embs = model.encode(texts)
@@ -81,17 +90,33 @@ def semantic_dedup(
             if kept_roles[j] == "assistant"
         ][:window]
         is_dup = False
+        match_idx = -1
+        match_cos = 0.0
         if same_role_recent:
             cur = embs[i]
             prevs = embs[same_role_recent]
             sims = (prevs @ cur) / (norms[same_role_recent] * norms[i])
-            if float(sims.max()) >= threshold:
+            arg = int(sims.argmax())
+            match_cos = float(sims[arg])
+            if match_cos >= threshold:
                 is_dup = True
+                match_idx = same_role_recent[arg]
         if is_dup:
             dropped += 1
+            if return_drops:
+                drops.append(
+                    {
+                        "i": i,
+                        "cos": round(match_cos, 4),
+                        "prev": convo[match_idx][1],
+                        "curr": text,
+                    }
+                )
             continue
         out.append((role, text))
         kept_idx.append(i)
         kept_roles.append(role)
 
+    if return_drops:
+        return out, dropped, drops
     return out, dropped
