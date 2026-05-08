@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # PreCompact hook: runs before Claude Code's default summarizer fires.
 # Reads transcript_path/session_id/cwd from stdin JSON, runs the trimmer,
-# then emits hookSpecificOutput.additionalContext pointing the model at the
-# trimmed brief on disk so it ignores the lossy summarizer narrative.
+# then emits a top-level systemMessage pointing the model at the trimmed
+# brief on disk so it ignores the lossy summarizer narrative.
+# (PreCompact does NOT support hookSpecificOutput.additionalContext —
+# schema only allows continue/suppressOutput/stopReason/decision/reason/
+# systemMessage at the root.)
 #
 # Wire it into ~/.claude/settings.json under "hooks.PreCompact":
 #   {"matcher": "manual", "hooks": [{"type":"command","command":"<this-file>"}]}
@@ -34,8 +37,5 @@ brief_path=$(
 }
 
 jq -n --arg path "$brief_path" '{
-  hookSpecificOutput: {
-    hookEventName: "PreCompact",
-    additionalContext: ("Default compaction is unreliable. Deterministic trimmed brief written to " + $path + ". After this turn, use the Read tool to load that file and treat it as ground truth over the summarizer narrative.")
-  }
+  systemMessage: ("Default compaction is unreliable. Deterministic trimmed brief written to " + $path + ". After this turn, use the Read tool to load that file and treat it as ground truth over the summarizer narrative.")
 }'
