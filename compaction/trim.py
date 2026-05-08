@@ -39,10 +39,15 @@ from compaction.extract import (
     elide_pasted_output,
     extract_code_anchors,
     extract_decisions,
+    extract_decisions_made,
     extract_errors,
     extract_files_touched,
+    extract_open_question,
     extract_plans_saved,
+    extract_result_tables,
     extract_todo_snapshot,
+    rerank_code_anchors_by_goal,
+    synthesize_active_goal,
     is_noise_user_msg,
     is_real_user,
     iter_signal_user_msgs,
@@ -268,6 +273,11 @@ def _render_tier1(
     agent_report_limit: int = 5,
     agent_report_max_chars: int = 1500,
     plans: list[str] | None = None,
+    open_question: str | None = None,
+    decisions_made: list[str] | None = None,
+    result_tables: list[str] | None = None,
+    result_tables_tier1_cap: int = 2,
+    active_goal: str | None = None,
 ) -> str:
     archive_line = (
         f"Full session: memory doc `{archive_hash}` — recall via `memory doc get {archive_hash}`"
@@ -284,8 +294,32 @@ def _render_tier1(
     out.append(f"# Session Brief — {iso}")
     out.append(f"\n**Session:** `{session_id}`  \n**Cwd:** `{cwd}`")
     out.append(f"\n## Archive\n{archive_line}\n{tier2_line}")
-    active_goal = signal_msgs[-1] if signal_msgs else "(no signal user messages found)"
-    out.append(f"\n## Active Goal\n{_truncate(active_goal, active_goal_max_chars)}")
+    goal_text = active_goal or (
+        signal_msgs[-1] if signal_msgs else "(no signal user messages found)"
+    )
+    out.append(f"\n## Active Goal\n{_truncate(goal_text, active_goal_max_chars)}")
+
+    if open_question:
+        out.append(f"\n## Open Question\n{open_question}")
+
+    if decisions_made:
+        out.append(f"\n## Decisions Made ({len(decisions_made)})")
+        for d in decisions_made:
+            out.append(f"- {d}")
+
+    if result_tables:
+        kept_tables = result_tables[:result_tables_tier1_cap]
+        out.append(
+            f"\n## Result Tables ({len(kept_tables)}"
+            + (
+                f"; +{len(result_tables) - len(kept_tables)} more in tier2"
+                if len(result_tables) > len(kept_tables)
+                else ""
+            )
+            + ")"
+        )
+        for tbl in kept_tables:
+            out.append(tbl)
 
     if recalled_memories:
         out.append("\n## Relevant Prior Memories")
@@ -337,11 +371,22 @@ def _render_tier1(
         for f in capped_files:
             out.append(f"- `{f}`")
 
+    # Conversation Arc replaces the old "Last N Signal User Messages"
+    # dump. We surface only the FIRST signal user msg + the synthesized
+    # state line — the dump was almost always a duplicate of Active Goal
+    # plus low-value short prompts. The full conversation lives in tier2.
     if signal_msgs:
-        kept = signal_msgs[-last_user_msgs:]
-        out.append(f"\n## Last {len(kept)} Signal User Messages")
-        for m in kept:
-            out.append(f"- {_truncate(m, user_msg_max_chars)}")
+        first = signal_msgs[0]
+        last_state = active_goal or signal_msgs[-1]
+        # Avoid printing the same msg twice if first == last (single-turn
+        # session) or the synthesized goal already echoes the first msg.
+        arc: list[str] = []
+        arc.append(("opening", first))
+        if last_state and last_state != first:
+            arc.append(("current", last_state))
+        out.append(f"\n## Conversation Arc")
+        for label, msg in arc:
+            out.append(f"- **{label}:** {_truncate(msg, user_msg_max_chars)}")
 
     if code_anchors:
         kept_anchors = code_anchors[-code_anchor_limit:]
@@ -442,7 +487,7 @@ def render_brief(
     cwd: str,
     archive_hash: str | None,
     tier2_path: str | None = None,
-    code_anchor_limit: int = 10,
+    code_anchor_limit: int = 3,
     decision_limit: int = 10,
     last_user_msgs: int = 20,
     recalled_memories: list[str] | None = None,
@@ -461,6 +506,20 @@ def render_brief(
     plans = extract_plans_saved(entries)
     errors = extract_errors(entries)
     code_anchors = extract_code_anchors(entries)
+    open_question = extract_open_question(entries)
+    decisions_made = extract_decisions_made(entries)
+    # Tier1 caps tables at 2; tier2 keeps all of them.
+    result_tables = extract_result_tables(entries, from_last=3, max_tables=0)
+    # Synthesize Active Goal from the last assistant turns (numeric
+    # outcomes + open question). Falls back to last signal user msg
+    # when no state line is extractable — preserves prior behavior on
+    # short / read-only sessions.
+    fallback_goal = signal_msgs[-1] if signal_msgs else None
+    active_goal = synthesize_active_goal(entries, fallback=fallback_goal)
+    # Rerank code anchors against the synthesized goal (richer signal
+    # than raw user msg in most sessions).
+    if active_goal:
+        code_anchors = rerank_code_anchors_by_goal(code_anchors, active_goal)
     # Tier1 gets truncated reports (1500 char cap); tier2 keeps full bodies.
     agent_reports_tier1 = extract_agent_reports(entries, max_chars=1500)
     agent_reports_tier2 = extract_agent_reports(entries, max_chars=0)
@@ -488,13 +547,19 @@ def render_brief(
         agent_reports=agent_reports_tier1,
         agent_report_limit=agent_report_limit,
         plans=plans,
+        open_question=open_question,
+        decisions_made=decisions_made,
+        result_tables=result_tables,
+        active_goal=active_goal,
     )
 
     # Progressive trim if tier1 over budget. Order: shrink files → fewer
     # code anchors → fewer user msgs → tighter per-section caps. Agent
     # report cap also tightens because reports can be 1500 chars × 5 = 7.5 KB.
+    # `result_tables_cap` shrinks alongside the other limits — tables are
+    # high-signal but can each run hundreds of bytes.
     def _attempt(file_lim, code_lim, user_msg_lim, code_chars, user_chars,
-                 agent_lim, agent_chars):
+                 agent_lim, agent_chars, tables_cap):
         return _render_tier1(
             iso=iso, session_id=session_id, cwd=cwd, archive_hash=archive_hash,
             tier2_path=tier2_path, signal_msgs=signal_msgs, decisions=decisions,
@@ -507,13 +572,19 @@ def render_brief(
             agent_report_limit=agent_lim,
             agent_report_max_chars=agent_chars,
             plans=plans,
+            open_question=open_question,
+            decisions_made=decisions_made,
+            result_tables=result_tables,
+            result_tables_tier1_cap=tables_cap,
+            active_goal=active_goal,
         )
 
     for params in [
-        (50, 10, 20, 800, 500, 5, 1500),   # default
-        (30, 5, 15, 400, 300, 5, 800),     # 1st squeeze
-        (20, 3, 10, 200, 200, 3, 500),     # 2nd squeeze
-        (10, 2, 5, 100, 120, 2, 300),      # 3rd squeeze
+        # files, code, user, code_chars, user_chars, agent_lim, agent_chars, tables
+        (50, 10, 20, 800, 500, 5, 1500, 2),  # default
+        (30, 5, 15, 400, 300, 5, 800, 2),    # 1st squeeze
+        (20, 3, 10, 200, 200, 3, 500, 1),    # 2nd squeeze
+        (10, 2, 5, 100, 120, 2, 300, 0),     # 3rd squeeze (tables off)
     ]:
         tier1 = _attempt(*params)
         if len(tier1.encode("utf-8")) <= TIER1_BUDGET_BYTES:

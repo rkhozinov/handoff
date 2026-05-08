@@ -274,7 +274,11 @@ def test_render_brief_includes_active_goal():
 def test_render_brief_includes_decisions_section():
     brief = _brief(_build_entries(), "s", "/c", "h")
     assert "## Decisions / Direction Reversals" in brief
-    assert "no, do Y instead" in brief.split("## Decisions")[1].split("##")[0]
+    # Pin the section split on the *full* heading because there are now
+    # two sibling "## Decisions ..." headers: the user-msg-driven
+    # "Direction Reversals" and the assistant-verb-driven "Decisions Made".
+    section = brief.split("## Decisions / Direction Reversals")[1].split("##")[0]
+    assert "no, do Y instead" in section
 
 
 def test_render_brief_files_touched_listed():

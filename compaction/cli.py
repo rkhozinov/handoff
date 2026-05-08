@@ -148,6 +148,17 @@ def main(argv: list[str] | None = None) -> int:
         f"archive={archive_hash[:12] if archive_hash else 'none'}  "
         f"agent_reports={agent_stored}/{agent_count}\n"
     )
+    # Soft size guard. The 25 KB hard cap inside `_render_tier1` stops a
+    # truly oversized brief from blocking /handon, but a brief that hits
+    # 8 KB+ usually means a section escaped its squeeze schedule. Warn so
+    # the user knows to inspect, not fail.
+    _SOFT_TIER1_BUDGET = 8 * 1024
+    if tier1_bytes > _SOFT_TIER1_BUDGET:
+        sys.stderr.write(
+            f"warning: tier1 brief is {tier1_bytes // 1024} KB "
+            f"(> {_SOFT_TIER1_BUDGET // 1024} KB soft budget). "
+            f"Inspect for runaway sections in {tier1_path}.\n"
+        )
     return 0
 
 

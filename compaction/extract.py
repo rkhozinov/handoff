@@ -577,6 +577,65 @@ def extract_code_anchors(entries: Iterable[dict], min_lines: int = 5) -> list[st
     return out
 
 
+# Stopwords that drag down keyword-overlap signal: pure-grammar words +
+# meta words like "code"/"file" that appear in nearly every code anchor.
+_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "by", "do", "for",
+        "from", "has", "have", "i", "if", "in", "is", "it", "its", "me",
+        "my", "no", "not", "of", "on", "or", "so", "that", "the", "this",
+        "to", "we", "with", "you", "your", "all", "any", "but", "can",
+        "will", "would", "should", "could", "want", "need", "let", "lets",
+        "code", "file", "some", "more", "less", "than", "then", "when",
+        "where", "what", "which", "how", "why", "use", "using", "used",
+        "fix", "make", "see", "show", "run", "do",
+    }
+)
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
+
+
+def _tokenize_for_relevance(text: str) -> set[str]:
+    """Lowercase tokens of length >=3, stopwords removed. Used for the
+    bag-of-words goal/anchor overlap score."""
+    return {
+        t.lower() for t in _TOKEN_RE.findall(text or "") if t.lower() not in _STOPWORDS
+    }
+
+
+def rerank_code_anchors_by_goal(
+    anchors: list[str], goal: str, *, drop_bottom_half: bool = True
+) -> list[str]:
+    """Sort code anchors by token-overlap with `goal`, descending.
+
+    When `drop_bottom_half` is True (the brief default), anchors whose
+    overlap score is in the lower half of the distribution are dropped —
+    they're cluttering the brief without contributing to the active task.
+    Anchors with score 0 are always dropped when `goal` is non-empty.
+
+    No-op (returns input) if `goal` is empty or fewer than 2 anchors.
+    Stable for ties: preserves original order among equal-score items."""
+    if not goal or len(anchors) < 2:
+        return list(anchors)
+    goal_tokens = _tokenize_for_relevance(goal)
+    if not goal_tokens:
+        return list(anchors)
+    scored: list[tuple[int, int, str]] = []
+    for i, a in enumerate(anchors):
+        score = len(_tokenize_for_relevance(a) & goal_tokens)
+        scored.append((score, i, a))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    # Drop zero-score anchors first.
+    nonzero = [item for item in scored if item[0] > 0]
+    if not nonzero:
+        # Goal didn't overlap with any anchor — keep originals in order.
+        return list(anchors)
+    if drop_bottom_half and len(nonzero) > 1:
+        # Median-cut: keep the top ceil(N/2).
+        keep = (len(nonzero) + 1) // 2
+        nonzero = nonzero[:keep]
+    return [a for _, _, a in nonzero]
+
+
 def extract_todo_snapshot(entries: Iterable[dict]) -> str | None:
     """Most recent TaskCreate/TaskUpdate input as JSON string, or None."""
     last: dict | None = None
@@ -587,6 +646,239 @@ def extract_todo_snapshot(entries: Iterable[dict]) -> str | None:
             if b.get("type") == "tool_use" and b.get("name") in ("TaskCreate", "TaskUpdate"):
                 last = b.get("input")
     return json.dumps(last, indent=2) if last else None
+
+
+# Phrases that signal the assistant is asking the user for direction. We
+# match these in addition to plain `?` to capture explicit handoff cues
+# even when the question mark lands on a continuation line.
+_OPEN_QUESTION_PHRASE_RE = re.compile(
+    r"\b(?:next step|want me to|shall i|should i|ok to|go ahead\?|"
+    r"continue\?|proceed\?)\b",
+    re.IGNORECASE,
+)
+# A markdown table is at minimum a header row + a separator like `| --- |`
+# + at least one body row. We require all three so we don't latch onto
+# stray pipe-bearing prose ("she said `|` is unsafe"). Use `[ \t]*` (NOT
+# `\s*`) so blank-line boundaries between back-to-back tables aren't
+# silently absorbed into the same match.
+_TABLE_BLOCK_RE = re.compile(
+    r"(?:^|\n)("
+    r"(?:\|[^\n]+\|[ \t]*\n)+"   # 1+ header rows (typically 1)
+    r"\|[\s\-:|]+\|[ \t]*\n"      # separator row: | --- | --- |
+    r"(?:\|[^\n]+\|[ \t]*\n?)+"   # 1+ body rows
+    r")",
+    re.MULTILINE,
+)
+# Decision verbs in assistant text — the verbs the user's review flagged
+# in handoff-recommendations.md as load-bearing for "what changed". We
+# allow up to ~40 chars of line preamble (e.g. "I'll be ", "Just ") so
+# the verb doesn't need to be at the absolute line start.
+_DECISION_VERB_RE = re.compile(
+    r"^.{0,40}?\b(?:Adding|Removing|Removed|Renaming|Renamed|"
+    r"Switching|Switched|Dropping|Dropped|Force-?removed|Force-?removing|"
+    r"Replaced|Replacing|Bumping|Bumped|Reverted|Reverting|Migrating|"
+    r"Migrated|Wired|Wiring|Pinned|Pinning|Disabled|Disabling|Enabled|"
+    r"Enabling|Skipped|Skipping)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _last_assistant_texts(entries: list[dict], n: int) -> list[str]:
+    """Return up to `n` most-recent assistant text turns, oldest first."""
+    out: list[str] = []
+    for e in reversed(entries):
+        if e.get("type") != "assistant":
+            continue
+        text = ""
+        for b in assistant_blocks(e):
+            if isinstance(b, dict) and b.get("type") == "text":
+                text += (b.get("text") or "")
+        text = text.strip()
+        if text:
+            out.append(text)
+            if len(out) >= n:
+                break
+    return list(reversed(out))
+
+
+def extract_open_question(entries: Iterable[dict]) -> str | None:
+    """Find the last unresolved question in the assistant transcript.
+
+    Strategy: walk assistant text turns from newest to oldest. Return the
+    last sentence that ends in `?` OR contains an open-question phrase
+    (`next step`, `want me to`, `shall I`, etc.). Caps at 280 chars so
+    multi-sentence questions don't blow the brief budget.
+
+    Returns None when nothing matches — callers should omit the section
+    entirely rather than print an empty stub."""
+    entries = list(entries)
+    for e in reversed(entries):
+        if e.get("type") != "assistant":
+            continue
+        text = ""
+        for b in assistant_blocks(e):
+            if isinstance(b, dict) and b.get("type") == "text":
+                text += (b.get("text") or "")
+        if not text.strip():
+            continue
+        # Search sentence-by-sentence from the end for `?` or phrase match.
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        for sent in reversed(sentences):
+            s = sent.strip()
+            if not s:
+                continue
+            if s.endswith("?") or _OPEN_QUESTION_PHRASE_RE.search(s):
+                return s[:280]
+    return None
+
+
+# Patterns for `synthesize_active_goal`: numeric outcomes (X → Y) and
+# action verbs that imply state changes worth surfacing in the goal.
+_GOAL_NUMBER_RE = re.compile(
+    r"\b\d+\s*(?:→|->|to)\s*\d+\b",
+)
+_GOAL_VERB_NUMBER_RE = re.compile(
+    r"\b(?:dropped|removed|deleted|created|added|"
+    r"reduced|cut|trimmed|shrunk|kept|ran|tested|fixed)"
+    r"\s+\d+\b",
+    re.IGNORECASE,
+)
+
+
+def synthesize_active_goal(
+    entries: Iterable[dict],
+    fallback: str | None,
+    *,
+    last_assistant_turns: int = 3,
+    max_chars: int = 280,
+) -> str | None:
+    """Compose a state line from the last few assistant turns.
+
+    Strategy:
+    1. Walk last `last_assistant_turns` assistant text turns.
+    2. Find sentences containing numeric outcomes (`277 → 26`,
+       `dropped 252`, `reduced 100 to 30`) — those are state markers.
+    3. Find an open-question sentence in the same window (re-uses the
+       open-question matcher).
+    4. Compose: `<state>; <pending>` if both present, else whichever.
+    5. Fall back to `fallback` (typically last signal user msg) when
+       neither state nor pending are extractable.
+
+    Returns None when there's nothing to surface AND no fallback. Caps
+    output at `max_chars` to keep tier1 budget intact."""
+    entries = list(entries)
+    last_texts = _last_assistant_texts(entries, last_assistant_turns)
+
+    state_sentences: list[str] = []
+    for text in last_texts:
+        for sent in re.split(r"(?<=[.!?])\s+", text):
+            s = sent.strip()
+            if not s:
+                continue
+            if _GOAL_NUMBER_RE.search(s) or _GOAL_VERB_NUMBER_RE.search(s):
+                state_sentences.append(s)
+
+    # Use the most-recent state sentence (last in chronological order).
+    state = state_sentences[-1] if state_sentences else ""
+    pending = extract_open_question(entries) or ""
+
+    parts: list[str] = []
+    if state:
+        parts.append(state)
+    if pending and pending not in state:
+        parts.append(pending)
+    if not parts:
+        return fallback
+    composed = " ".join(parts)
+    if len(composed) > max_chars:
+        composed = composed[: max_chars - 3].rstrip() + "..."
+    return composed
+
+
+def extract_decisions_made(entries: Iterable[dict], limit: int = 10) -> list[str]:
+    """Return up to `limit` decision-statement bullets in chronological order.
+
+    Sources:
+      * Assistant text lines starting with a decision verb (Removing,
+        Force-removed, Pinned, Reverted, etc.) — the prose log of what
+        was done in this session.
+      * `git commit -m <msg>` first lines pulled out of Bash tool_use
+        commands — committed work IS a decision record.
+
+    Lines are deduped (case-insensitive) and capped to 200 chars each."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(line: str) -> None:
+        s = line.strip()
+        if not s:
+            return
+        s = s[:200]
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(s)
+
+    git_commit_re = re.compile(
+        r"git\s+commit\s+(?:[^\n]*\s)?-m\s+(?:'([^']+)'|\"([^\"]+)\")",
+        re.IGNORECASE,
+    )
+
+    for e in entries:
+        if e.get("type") != "assistant":
+            continue
+        for b in assistant_blocks(e):
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                text = b.get("text") or ""
+                for line in text.splitlines():
+                    if _DECISION_VERB_RE.match(line):
+                        _push(line)
+                        if len(out) >= limit:
+                            return out
+            elif bt == "tool_use" and b.get("name") == "Bash":
+                cmd = (b.get("input") or {}).get("command", "") or ""
+                for m in git_commit_re.finditer(cmd):
+                    msg = m.group(1) or m.group(2) or ""
+                    # Take only the subject line of the commit message.
+                    subj = msg.splitlines()[0] if msg else ""
+                    if subj:
+                        _push(f"committed: {subj}")
+                        if len(out) >= limit:
+                            return out
+    return out
+
+
+def extract_result_tables(
+    entries: Iterable[dict], from_last: int = 3, max_tables: int = 0
+) -> list[str]:
+    """Pull markdown tables from the last `from_last` assistant text turns.
+
+    These are the highest-signal artifacts (drop tallies, disposition
+    summaries, sweep results) and rendering them verbatim costs nothing
+    — they're already markdown.
+
+    `max_tables=0` returns all matches; pass a positive int to cap (the
+    tier1 caller passes 2)."""
+    entries = list(entries)
+    out: list[str] = []
+    seen: set[str] = set()
+    for text in _last_assistant_texts(entries, from_last):
+        for m in _TABLE_BLOCK_RE.finditer(text):
+            tbl = m.group(1).strip()
+            if not tbl:
+                continue
+            key = tbl.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(tbl)
+            if max_tables and len(out) >= max_tables:
+                return out
+    return out
 
 
 _PLAN_PATH_RE = re.compile(r"(?:^|/)plans?/.+\.md$", re.IGNORECASE)
