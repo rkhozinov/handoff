@@ -9,44 +9,52 @@ the same `session_id` across `/clear` and across `claude -c` resume, so this
 deterministically recovers the right brief no matter which worktree or branch
 you're in.
 
-Run these steps:
+Run this single bash block — do **not** split it into multiple shell calls,
+because `SID` and `BRIEF` are shell variables that don't survive across
+separate invocations:
 
-1. Resolve the current session id from the newest JSONL in this cwd's CC
-   project dir (the file CC is writing to right now is the one you're in).
-   Use the **physical** cwd (`pwd -P`) so symlinked paths like iCloud
-   mirrors resolve to the same dir CC indexes under, and replace every
-   non-alphanumeric character with `-` to match CC's project-dir encoding
-   (it folds `/`, `.`, ` `, `~`, etc. all to `-`):
+```bash
+REAL_CWD=$(pwd -P)
+ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
+PROJECT_DIR="$HOME/.claude/projects/$ENC"
+SID=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl)
+BRIEF="$HOME/.claude/compaction/${SID}.md"
+if [ -n "$SID" ] && [ -f "$BRIEF" ]; then
+  echo "BRIEF_PATH=$BRIEF"
+else
+  echo "BRIEF_MISSING sid=$SID"
+fi
+```
 
-   ```bash
-   REAL_CWD=$(pwd -P)
-   ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
-   PROJECT_DIR="$HOME/.claude/projects/$ENC"
-   SID=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl)
-   BRIEF="$HOME/.claude/compaction/${SID}.md"
-   ```
+Decision tree based on the script's stdout:
 
-2. If `BRIEF` exists and is younger than 24 hours, that's the file. Read it
-   with the Read tool and treat its contents as ground-truth context for the
-   resumed work — Active Goal, Decisions, Open TodoList, Sub-Agent Findings
-   all override anything you might otherwise infer.
+* `BRIEF_PATH=<path>` printed → that's the file. Read it with the Read
+  tool and treat its contents as ground-truth context for the resumed
+  work — Active Goal, Open Question, Decisions Made, Conversation Arc,
+  Plans Saved, Sub-Agent Findings all override anything you might
+  otherwise infer.
 
-3. If `BRIEF` does not exist (no /handoff was run for this session) or is
-   stale (>24h), fall back: list the most recent briefs in
-   `~/.claude/compaction/` and ask the user which one to load:
+* `BRIEF_MISSING ...` printed → no /handoff was ever run for this
+  session. Fall back: list recent briefs and ask the user which one
+  to load:
 
-   ```bash
-   ls -lt "$HOME/.claude/compaction/"*.md 2>/dev/null \
-     | grep -v -E 'consumed-|-full\.md$' \
-     | head -10
-   ```
+  ```bash
+  ls -lt "$HOME/.claude/compaction/"*.md 2>/dev/null \
+    | grep -v -E 'consumed-|-full\.md$' \
+    | head -10
+  ```
 
-   Show the list with each brief's first-line `# Session Brief — <ts>` header
-   for context (run `head -1 <file>` on each).
+  Show the list with each brief's first-line `# Session Brief — <ts>`
+  header for context (`head -1 <file>` per brief).
 
-4. After loading, print one line confirming what was restored:
-   `Restored: <session_id> from <ts>, <N> agent reports, <N> decisions`
+After loading, print one line confirming what was restored:
+`Restored: <session_id> from <ts>, <N> decisions`.
 
-This command is idempotent — invoking it twice loads the same brief twice.
-It does not consume or rename any file, so you can re-run `/handon` whenever
-context resets again.
+There is **no freshness gate**. With `session_id` as the lookup key,
+existence of the brief is equivalent to correctness — there's no risk
+of loading a different session's brief by accident. A brief that hasn't
+been refreshed in days is still the right brief for THIS session.
+
+This command is idempotent — invoking it twice loads the same brief
+twice. It does not consume or rename any file, so you can re-run
+`/handon` whenever context resets again.
