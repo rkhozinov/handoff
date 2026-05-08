@@ -384,6 +384,55 @@ def render_brief_html(entries: list[dict], label: str) -> str:
     return f'<div class="brief-preview">{escaped[:8000]}{"..." if len(escaped) > 8000 else ""}</div>'
 
 
+def _format_brief_pane(text: str, label: str, byte_count: int, tok_count: int) -> str:
+    """Render one tier as a labeled pane with byte+token stats. Renders the
+    raw markdown source so structural overlap with the sibling tier is
+    visible at a glance — escaping HTML, but leaving the text otherwise
+    untouched."""
+    escaped = html.escape(text)
+    return (
+        f'<div class="diff-col">'
+        f'<h3>{html.escape(label)} '
+        f'<span style="color:#8b949e;font-weight:normal;font-size:0.85em;">'
+        f'({byte_count:,} bytes · ~{tok_count:,} tok)</span></h3>'
+        f'<pre class="pre" style="max-height:80vh;overflow:auto;">{escaped}</pre>'
+        f'</div>'
+    )
+
+
+def render_tier_compare_html(entries: list[dict], label: str) -> str:
+    """Side-by-side tier1 vs tier2 for manual redundancy audit.
+
+    Renders both tiers with byte + token counts in the headers so the
+    reviewer can eyeball:
+      * how much tier1 content is also present verbatim in tier2
+      * whether tier1's synthesized sections (Active Goal, Decisions Made,
+        Result Tables) actually save the agent from reading tier2
+      * which tier2-only content (verbatim user msgs, full assistant
+        bodies, sub-agent reports) is worth the extra read"""
+    tier1, tier2 = render_brief(
+        entries, label, "/demo", archive_hash="abcd1234ef56...",
+        tier2_path="/demo/session-full.md",
+    )
+    t1_bytes = len(tier1.encode("utf-8"))
+    t2_bytes = len(tier2.encode("utf-8"))
+    t1_tok = count_tokens(tier1, mode=_TOKEN_MODE)
+    t2_tok = count_tokens(tier2, mode=_TOKEN_MODE)
+    pct = round(100 * t1_bytes / max(1, t2_bytes), 1)
+    return (
+        f'<p style="color:#8b949e">'
+        f'tier1 = {pct}% the size of tier2 by bytes. '
+        f'Look for sections in tier1 that duplicate prose already in tier2 '
+        f'(Decisions Made → assistant verb lines; Result Tables → last-3-turn '
+        f'tables; Active Goal → derived from a tier2 sentence).'
+        f'</p>'
+        f'<div class="diff-grid">'
+        f'{_format_brief_pane(tier1, "TIER1 (handon Read target)", t1_bytes, t1_tok)}'
+        f'{_format_brief_pane(tier2, "TIER2 (full trimmed convo)", t2_bytes, t2_tok)}'
+        f'</div>'
+    )
+
+
 def hero_metrics(rows: list[dict]) -> str:
     total_raw = sum(r["raw_bytes"] for r in rows)
     total_raw_tok = sum(r["raw_tokens"] for r in rows)
@@ -447,11 +496,13 @@ def main() -> int:
     # template, so only one fixture's DOM is "live" at a time.
     diff_templates: list[str] = []
     brief_templates: list[str] = []
+    tier_cmp_templates: list[str] = []
     options: list[str] = []
     for f in fixtures:
         entries = load_jsonl(str(f))
         d_html = build_diff_html(entries, max_turns=None)
         b_html = render_brief_html(entries, f.stem)
+        cmp_html = render_tier_compare_html(entries, f.stem)
         sel = " selected" if f.stem == default_fixture else ""
         stem = html.escape(f.stem)
         diff_templates.append(
@@ -463,6 +514,9 @@ def main() -> int:
         )
         brief_templates.append(
             f'<template id="fix-brief-{stem}" data-fixture="{stem}">{b_html}</template>'
+        )
+        tier_cmp_templates.append(
+            f'<template id="fix-tiercmp-{stem}" data-fixture="{stem}">{cmp_html}</template>'
         )
         options.append(
             f'<option value="{stem}"{sel}>{stem}</option>'
@@ -485,6 +539,7 @@ def main() -> int:
   if (!sel) return;
   var diffActive = document.getElementById("diff-active");
   var briefActive = document.getElementById("brief-active");
+  var tierCmpActive = document.getElementById("tiercmp-active");
   if (!diffActive || !briefActive) return;
 
   function bindScrollSync(scope) {
@@ -538,7 +593,15 @@ def main() -> int:
     briefActive.replaceChildren(briefTpl.content.cloneNode(true));
     diffActive.dataset.fixture = name;
     briefActive.dataset.fixture = name;
+    if (tierCmpActive) {
+      var tierCmpTpl = document.getElementById("fix-tiercmp-" + name);
+      if (tierCmpTpl) {
+        tierCmpActive.replaceChildren(tierCmpTpl.content.cloneNode(true));
+        tierCmpActive.dataset.fixture = name;
+      }
+    }
     bindScrollSync(diffActive);
+    bindScrollSync(tierCmpActive || document.body);
     // Re-apply persisted flag state to the freshly attached turns.
     if (window.__compactionRefreshFlags) window.__compactionRefreshFlags();
   }
@@ -735,6 +798,24 @@ def main() -> int:
   and what <code>/handon</code> reads back into the next session (head, capped at 25 KB):</p>
   {"".join(brief_templates)}
   <div id="brief-active"></div>
+</section>
+
+<section>
+  <h2>Tier comparison: tier1 vs tier2 (manual redundancy audit)</h2>
+  <p style="color:#8b949e">
+    Tier1 is the file <code>/handon</code> Reads by default. Tier2
+    (<code>&lt;sid&gt;-full.md</code>) is the full trimmed convo;
+    the agent autonomously Reads it when tier1 looks thin (the
+    "Full conversation: open with Read tool when more context needed"
+    line in tier1 metadata invites this).
+    Compare panes side-by-side: tier1's "Decisions Made", "Result Tables",
+    and "Active Goal" are derived from sentences that are ALSO present
+    verbatim in tier2 — that's the redundancy you're auditing. Tier2-only
+    content (verbatim user msgs, full assistant bodies, full sub-agent
+    reports) is what makes the second Read worth it.
+  </p>
+  {"".join(tier_cmp_templates)}
+  <div id="tiercmp-active"></div>
 </section>
 
 <section>
