@@ -21,6 +21,10 @@ hf = [
 api = [
     "anthropic>=0.40",
 ]
+dedup = [
+    "model2vec>=0.4",
+    "numpy>=1.26",
+]
 
 [project.scripts]
 cc-handoff = "compaction.cli:main"

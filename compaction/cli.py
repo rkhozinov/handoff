@@ -66,6 +66,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip auto-storing sub-agent reports to memory (default: store)",
     )
     p.add_argument(
+        "--semantic-dedup",
+        action="store_true",
+        help=(
+            "Drop near-duplicate adjacent turns by Model2Vec cosine similarity. "
+            "Catches paraphrased tool retries (`-n prod` vs `--namespace prod`) "
+            "that exact-match dedup misses. Requires `model2vec` + `numpy`; "
+            "no-op when missing."
+        ),
+    )
+    p.add_argument(
         "--token-mode",
         choices=VALID_MODES,
         default="auto",
@@ -121,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         archive_hash=archive_hash,
         tier2_path=str(tier2_path),
         recalled_memories=recalled_lines or None,
+        semantic_dedup=args.semantic_dedup,
     )
 
     # Auto-store sub-agent reports to memory so they survive /clear and become
