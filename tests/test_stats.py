@@ -14,9 +14,9 @@ from compaction.trim import render_brief
 
 
 def _brief(*args, **kwargs) -> str:
-    """Helper: tier1 + tier2 joined for substring asserts."""
-    tier1, tier2 = render_brief(*args, **kwargs)
-    return tier1 + "\n" + tier2
+    """Helper: render_brief now returns a single string (the trimmed
+    convo). Aliased here so the substring asserts read naturally."""
+    return render_brief(*args, **kwargs)
 
 
 def test_signal_user_msgs_preserved_across_fixtures(any_fixtures):

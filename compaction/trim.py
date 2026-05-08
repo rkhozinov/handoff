@@ -34,23 +34,10 @@ from datetime import datetime, timezone
 from compaction.extract import (
     SUBAGENT_TOOL_NAMES,
     assistant_blocks,
-    extract_agent_reports,
     DROP_TOP_TYPES,
     elide_pasted_output,
-    extract_code_anchors,
-    extract_decisions,
-    extract_decisions_made,
-    extract_errors,
-    extract_files_touched,
-    extract_open_question,
-    extract_plans_saved,
-    extract_result_tables,
-    extract_todo_snapshot,
-    rerank_code_anchors_by_goal,
-    synthesize_active_goal,
     is_noise_user_msg,
     is_real_user,
-    iter_signal_user_msgs,
     short_tool_input,
     user_text,
 )
@@ -63,12 +50,9 @@ NARRATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Tier-1 budget. /handon Read caps at 25 KB; leave headroom.
-TIER1_BUDGET_BYTES = 20_000
-
-# Per-turn assistant text cap in tier2. Prevents one giant turn (e.g. a
-# long `Recommendation` block) from dominating the brief. Whole reasoning
-# stays in the memory doc archive; tier2 keeps a head + tail marker.
+# Per-turn assistant text cap. Prevents one giant turn (e.g. a long
+# `Recommendation` block) from dominating the brief. Full reasoning
+# stays in the memory doc archive; the brief keeps head + tail marker.
 ASSISTANT_TURN_MAX_CHARS = 4_000
 
 
@@ -167,7 +151,16 @@ def render_assistant(
             and next_is_tool
         )
 
-        narration_drop = not tool_markers and bool(NARRATION_RE.match(text_joined))
+        # Narration prefix ("Got it.", "Let me check.") used to be droppable,
+        # but text turns can carry inline code fences. Code fences are signal —
+        # never drop a turn whose text contains one even when the prose around
+        # it looks like narration.
+        has_code_fence = "```" in text_joined
+        narration_drop = (
+            not tool_markers
+            and not has_code_fence
+            and bool(NARRATION_RE.match(text_joined))
+        )
 
         # Short assistant ack/reply with no tool_use: "Done." "Fixed." "Looks good."
         short_reply_drop = (
@@ -247,165 +240,47 @@ def _truncate(s: str, max_chars: int, suffix: str = " […]") -> str:
     return s[: max_chars - len(suffix)].rstrip() + suffix
 
 
-def _render_tier1(
-    *,
+
+_ANTI_REREAD_NOTICE = """## ⚠ Authoritative record — don't re-explore
+
+This brief is the prior session's full conversation, trimmed. Treat
+it as ground truth:
+
+- Files already Read here (look for `[Read file_path=...]` markers) →
+  do **not** re-Read them unless the user explicitly asks. Assume
+  contents match what was Read.
+- Bash commands shown here with their output discussed → do **not**
+  re-run them just to recover context.
+- Sub-agent reports (look for `[Sub-agent report: ...]` blocks) →
+  treat findings as authoritative; do **not** re-dispatch the same
+  agent.
+- Directories already explored via Glob/Grep → do **not** re-walk
+  them to "refresh context".
+
+If you genuinely need fresh state (file may have changed since the
+prior session, command output is time-sensitive), **ask the user
+first** before re-fetching.
+"""
+
+
+def _render_brief(
     iso: str,
     session_id: str,
     cwd: str,
     archive_hash: str | None,
-    tier2_path: str | None,
-    signal_msgs: list[str],
-    decisions: list[str],
-    files: list[str],
-    todos: str | None,
-    errors: list[str],
-    code_anchors: list[str],
-    decision_limit: int,
-    last_user_msgs: int,
-    code_anchor_limit: int,
-    file_limit: int = 50,
-    user_msg_max_chars: int = 500,
-    decision_max_chars: int = 300,
-    code_anchor_max_chars: int = 800,
-    active_goal_max_chars: int = 1500,
-    recalled_memories: list[str] | None = None,
-    agent_reports: list[tuple[str, str, str]] | None = None,
-    agent_report_limit: int = 5,
-    agent_report_max_chars: int = 1500,
-    plans: list[str] | None = None,
-    open_question: str | None = None,
-    decisions_made: list[str] | None = None,
-    result_tables: list[str] | None = None,
-    result_tables_tier1_cap: int = 2,
-    active_goal: str | None = None,
-) -> str:
-    archive_line = (
-        f"Full session: memory doc `{archive_hash}` — recall via `memory doc get {archive_hash}`"
-        if archive_hash
-        else "Full session archive: NOT STORED"
-    )
-    tier2_line = (
-        f"Full conversation (trimmed): `{tier2_path}` — open with Read tool when more context needed"
-        if tier2_path
-        else "Full conversation: not written to disk"
-    )
-
-    out: list[str] = []
-    out.append(f"# Session Brief — {iso}")
-    out.append(f"\n**Session:** `{session_id}`  \n**Cwd:** `{cwd}`")
-    out.append(f"\n## Archive\n{archive_line}\n{tier2_line}")
-    goal_text = active_goal or (
-        signal_msgs[-1] if signal_msgs else "(no signal user messages found)"
-    )
-    out.append(f"\n## Active Goal\n{_truncate(goal_text, active_goal_max_chars)}")
-
-    if open_question:
-        out.append(f"\n## Open Question\n{open_question}")
-
-    if decisions_made:
-        out.append(f"\n## Decisions Made ({len(decisions_made)})")
-        for d in decisions_made:
-            out.append(f"- {d}")
-
-    if result_tables:
-        kept_tables = result_tables[:result_tables_tier1_cap]
-        out.append(
-            f"\n## Result Tables ({len(kept_tables)}"
-            + (
-                f"; +{len(result_tables) - len(kept_tables)} more in tier2"
-                if len(result_tables) > len(kept_tables)
-                else ""
-            )
-            + ")"
-        )
-        for tbl in kept_tables:
-            out.append(tbl)
-
-    if recalled_memories:
-        out.append("\n## Relevant Prior Memories")
-        for line in recalled_memories:
-            out.append(line)
-
-    if decisions:
-        out.append("\n## Decisions / Direction Reversals")
-        for d in decisions[-decision_limit:]:
-            out.append(f"- {_truncate(d, decision_max_chars)}")
-
-    if todos:
-        out.append("\n## Open TodoList")
-        out.append("```json")
-        out.append(_truncate(todos, 2000))
-        out.append("```")
-
-    if plans:
-        # Plan files saved during the session — only the path is recorded.
-        # The file persists on disk; reader can `Read` it when needed.
-        out.append(f"\n## Plans Saved ({len(plans)})")
-        for path in plans:
-            out.append(f"- `{path}`")
-
-    if errors:
-        out.append("\n## Errors Hit")
-        for err in errors:
-            out.append("```")
-            out.append(_truncate(err, 400))
-            out.append("```")
-
-    if agent_reports:
-        kept_reports = agent_reports[-agent_report_limit:]
-        out.append(f"\n## Sub-Agent Findings ({len(kept_reports)})")
-        for desc, sub, txt in kept_reports:
-            header = desc.strip() or "(no description)"
-            sub_part = f" — {sub}" if sub else ""
-            out.append(f"\n### {header}{sub_part}")
-            out.append(_truncate(txt, agent_report_max_chars))
-
-    if files:
-        capped_files = files[:file_limit]
-        omitted = len(files) - len(capped_files)
-        out.append(
-            f"\n## Files Touched ({len(capped_files)}"
-            + (f"; +{omitted} more in tier2" if omitted > 0 else "")
-            + ")"
-        )
-        for f in capped_files:
-            out.append(f"- `{f}`")
-
-    # Conversation Arc replaces the old "Last N Signal User Messages"
-    # dump. We surface only the FIRST signal user msg + the synthesized
-    # state line — the dump was almost always a duplicate of Active Goal
-    # plus low-value short prompts. The full conversation lives in tier2.
-    if signal_msgs:
-        first = signal_msgs[0]
-        last_state = active_goal or signal_msgs[-1]
-        # Avoid printing the same msg twice if first == last (single-turn
-        # session) or the synthesized goal already echoes the first msg.
-        arc: list[str] = []
-        arc.append(("opening", first))
-        if last_state and last_state != first:
-            arc.append(("current", last_state))
-        out.append(f"\n## Conversation Arc")
-        for label, msg in arc:
-            out.append(f"- **{label}:** {_truncate(msg, user_msg_max_chars)}")
-
-    if code_anchors:
-        kept_anchors = code_anchors[-code_anchor_limit:]
-        out.append(f"\n## Code Anchors ({len(kept_anchors)})")
-        for fence in kept_anchors:
-            out.append(_truncate(fence, code_anchor_max_chars))
-
-    return "\n".join(out) + "\n"
-
-
-def _render_tier2(
-    iso: str,
-    session_id: str,
-    cwd: str,
     convo: list[tuple[str, str]],
 ) -> str:
     out: list[str] = []
-    out.append(f"# Session Conversation (trimmed) — {iso}")
-    out.append(f"\n**Session:** `{session_id}`  \n**Cwd:** `{cwd}`\n")
+    out.append(f"# Session Brief — {iso}")
+    out.append(f"\n**Session:** `{session_id}`  \n**Cwd:** `{cwd}`")
+    if archive_hash:
+        out.append(
+            f"**Archive:** memory doc `{archive_hash}` "
+            f"(full raw via `memory doc get {archive_hash}`)"
+        )
+    out.append("")
+    out.append(_ANTI_REREAD_NOTICE)
+    out.append("\n## Conversation\n")
     for role, text in convo:
         marker = "U:" if role == "user" else "A:"
         out.append(f"\n{marker} {text}")
@@ -486,141 +361,20 @@ def render_brief(
     session_id: str,
     cwd: str,
     archive_hash: str | None,
-    tier2_path: str | None = None,
-    code_anchor_limit: int = 3,
-    decision_limit: int = 10,
-    last_user_msgs: int = 20,
-    recalled_memories: list[str] | None = None,
-    agent_report_limit: int = 5,
-) -> tuple[str, str]:
-    """Render both tiers. Returns (tier1, tier2).
+    **_legacy_kwargs,
+) -> str:
+    """Render the session brief: anti-re-read header + full trimmed convo.
 
-    tier1 = compact summary intended for /handon Read injection (~<=20 KB).
-    tier2 = full trimmed conversation, written to a separate file and
-            referenced from tier1 for on-demand Read.
+    Single output (no tier split). The whole brief is what `/handon`
+    Reads. This replaces the prior tier1/tier2 design — empirical
+    review (2026-05-08) found the trimmed convo more useful than the
+    extracted-sections summary, even at ~3x the bytes.
+
+    `_legacy_kwargs` is accepted-but-ignored so older callers (tests,
+    bench scripts) that still pass `tier2_path=` / `recalled_memories=`
+    don't break during the cutover.
     """
-    signal_msgs = iter_signal_user_msgs(entries)
-    decisions = extract_decisions(signal_msgs)
-    files = extract_files_touched(entries, cwd=cwd)
-    todos = extract_todo_snapshot(entries)
-    plans = extract_plans_saved(entries)
-    errors = extract_errors(entries)
-    code_anchors = extract_code_anchors(entries)
-    open_question = extract_open_question(entries)
-    decisions_made = extract_decisions_made(entries)
-    # Tier1 caps tables at 2; tier2 keeps all of them.
-    result_tables = extract_result_tables(entries, from_last=3, max_tables=0)
-    # Synthesize Active Goal from the last assistant turns (numeric
-    # outcomes + open question). Falls back to last signal user msg
-    # when no state line is extractable — preserves prior behavior on
-    # short / read-only sessions.
-    fallback_goal = signal_msgs[-1] if signal_msgs else None
-    active_goal = synthesize_active_goal(entries, fallback=fallback_goal)
-    # Rerank code anchors against the synthesized goal (richer signal
-    # than raw user msg in most sessions).
-    if active_goal:
-        code_anchors = rerank_code_anchors_by_goal(code_anchors, active_goal)
-    # Tier1 gets truncated reports (1500 char cap); tier2 keeps full bodies.
-    agent_reports_tier1 = extract_agent_reports(entries, max_chars=1500)
-    agent_reports_tier2 = extract_agent_reports(entries, max_chars=0)
-
     convo = build_convo(entries)
-
     iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return _render_brief(iso, session_id, cwd, archive_hash, convo)
 
-    tier1 = _render_tier1(
-        iso=iso,
-        session_id=session_id,
-        cwd=cwd,
-        archive_hash=archive_hash,
-        tier2_path=tier2_path,
-        signal_msgs=signal_msgs,
-        decisions=decisions,
-        files=files,
-        todos=todos,
-        errors=errors,
-        code_anchors=code_anchors,
-        decision_limit=decision_limit,
-        last_user_msgs=last_user_msgs,
-        code_anchor_limit=code_anchor_limit,
-        recalled_memories=recalled_memories,
-        agent_reports=agent_reports_tier1,
-        agent_report_limit=agent_report_limit,
-        plans=plans,
-        open_question=open_question,
-        decisions_made=decisions_made,
-        result_tables=result_tables,
-        active_goal=active_goal,
-    )
-
-    # Progressive trim if tier1 over budget. Order: shrink files → fewer
-    # code anchors → fewer user msgs → tighter per-section caps. Agent
-    # report cap also tightens because reports can be 1500 chars × 5 = 7.5 KB.
-    # `result_tables_cap` shrinks alongside the other limits — tables are
-    # high-signal but can each run hundreds of bytes.
-    def _attempt(file_lim, code_lim, user_msg_lim, code_chars, user_chars,
-                 agent_lim, agent_chars, tables_cap):
-        return _render_tier1(
-            iso=iso, session_id=session_id, cwd=cwd, archive_hash=archive_hash,
-            tier2_path=tier2_path, signal_msgs=signal_msgs, decisions=decisions,
-            files=files, todos=todos, errors=errors, code_anchors=code_anchors,
-            decision_limit=decision_limit, last_user_msgs=user_msg_lim,
-            code_anchor_limit=code_lim, file_limit=file_lim,
-            code_anchor_max_chars=code_chars, user_msg_max_chars=user_chars,
-            recalled_memories=recalled_memories,
-            agent_reports=agent_reports_tier1,
-            agent_report_limit=agent_lim,
-            agent_report_max_chars=agent_chars,
-            plans=plans,
-            open_question=open_question,
-            decisions_made=decisions_made,
-            result_tables=result_tables,
-            result_tables_tier1_cap=tables_cap,
-            active_goal=active_goal,
-        )
-
-    for params in [
-        # files, code, user, code_chars, user_chars, agent_lim, agent_chars, tables
-        (50, 10, 20, 800, 500, 5, 1500, 2),  # default
-        (30, 5, 15, 400, 300, 5, 800, 2),    # 1st squeeze
-        (20, 3, 10, 200, 200, 3, 500, 1),    # 2nd squeeze
-        (10, 2, 5, 100, 120, 2, 300, 0),     # 3rd squeeze (tables off)
-    ]:
-        tier1 = _attempt(*params)
-        if len(tier1.encode("utf-8")) <= TIER1_BUDGET_BYTES:
-            break
-
-    # Hard cap: if even the tightest squeeze overflows TIER1_BUDGET_BYTES,
-    # byte-truncate so /handon's 25 KB Read budget can't reject the whole
-    # brief. The full content stays in tier2 and the memory doc.
-    if len(tier1.encode("utf-8")) > TIER1_BUDGET_BYTES:
-        tier1 = _hard_truncate_bytes(
-            tier1,
-            TIER1_BUDGET_BYTES,
-            suffix="\n\n[...truncated; read tier2 file for full brief]\n",
-        )
-
-    tier2 = _render_tier2(iso, session_id, cwd, convo)
-    return tier1, tier2
-
-
-def _hard_truncate_bytes(s: str, max_bytes: int, suffix: str) -> str:
-    """Truncate `s` so its UTF-8 encoding fits in `max_bytes`, leaving room
-    for `suffix`. Cuts on a line boundary when possible so the result stays
-    parseable as Markdown."""
-    suffix_b = suffix.encode("utf-8")
-    budget = max_bytes - len(suffix_b)
-    if budget <= 0:
-        return suffix
-    encoded = s.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return s
-    head = encoded[:budget]
-    # Avoid splitting a multi-byte UTF-8 codepoint; back up to a safe boundary.
-    while head and (head[-1] & 0xC0) == 0x80:
-        head = head[:-1]
-    text = head.decode("utf-8", errors="ignore")
-    nl = text.rfind("\n")
-    if nl > budget // 2:
-        text = text[:nl]
-    return text + suffix

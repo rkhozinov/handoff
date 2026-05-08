@@ -33,32 +33,23 @@ def stats_for(fixture: Path, token_mode: str = "auto") -> dict:
     all_user = iter_real_user_msgs(entries)
     signal_user = iter_signal_user_msgs(entries)
 
-    tier1, tier2 = render_brief(
+    brief = render_brief(
         entries,
         session_id=fixture.stem,
         cwd="/bench",
         archive_hash=None,
     )
-    tier1_bytes = len(tier1.encode("utf-8"))
-    tier2_bytes = len(tier2.encode("utf-8"))
-    combined = tier1 + tier2
+    brief_bytes = len(brief.encode("utf-8"))
 
-    signal_kept = sum(1 for m in signal_user if m in combined)
+    signal_kept = sum(1 for m in signal_user if m in brief)
 
-    # Token counts now go through the pluggable tokenizer in
-    # compaction.tokenizer. Default mode "auto" prefers the offline HF
-    # tokenizer (Xenova/claude-tokenizer) and falls back to the legacy
-    # chars/4 heuristic if transformers is not installed.
     return {
         "fixture": fixture.name,
         "bytes_in": len(raw),
         "tok_in": count_tokens(raw_text, mode=token_mode),
-        "tier1_b": tier1_bytes,
-        "tier1_tok": count_tokens(tier1, mode=token_mode),
-        "tier2_b": tier2_bytes,
-        "tier2_tok": count_tokens(tier2, mode=token_mode),
-        "ratio_pct": round(100 * (tier1_bytes + tier2_bytes) / max(1, len(raw)), 2),
-        "tier1_fits_25k": "✓" if tier1_bytes <= 25_000 else "✗",
+        "brief_b": brief_bytes,
+        "brief_tok": count_tokens(brief, mode=token_mode),
+        "ratio_pct": round(100 * brief_bytes / max(1, len(raw)), 2),
         "user_total": len(all_user),
         "user_signal": len(signal_user),
         "signal_kept": signal_kept,

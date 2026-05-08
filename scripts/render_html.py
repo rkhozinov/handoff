@@ -295,7 +295,8 @@ def stat_row(label: str, path: Path) -> dict:
     entries = load_jsonl(str(path))
     all_user = iter_real_user_msgs(entries)
     signal_user = iter_signal_user_msgs(entries)
-    tier1, tier2 = render_brief(entries, label, "/bench", archive_hash=None)
+    brief = render_brief(entries, label, "/bench", archive_hash=None)
+    brief_bytes = len(brief.encode())
     return {
         "fixture": path.name,
         "lines": sum(1 for _ in path.open("rb")),
@@ -303,11 +304,9 @@ def stat_row(label: str, path: Path) -> dict:
         "raw_tokens": count_tokens(raw_text, mode=_TOKEN_MODE),
         "user_total": len(all_user),
         "user_signal": len(signal_user),
-        "tier1_bytes": len(tier1.encode()),
-        "tier1_tokens": count_tokens(tier1, mode=_TOKEN_MODE),
-        "tier2_bytes": len(tier2.encode()),
-        "tier2_tokens": count_tokens(tier2, mode=_TOKEN_MODE),
-        "ratio_pct": 100 * (len(tier1.encode()) + len(tier2.encode())) / max(1, len(raw)),
+        "brief_bytes": brief_bytes,
+        "brief_tokens": count_tokens(brief, mode=_TOKEN_MODE),
+        "ratio_pct": 100 * brief_bytes / max(1, len(raw)),
         "decisions": len(extract_decisions(signal_user)),
         "files": len(extract_files_touched(entries)),
         "code": len(extract_code_anchors(entries)),
@@ -345,30 +344,25 @@ def fmt_size(n: int, tokens: int | None = None) -> str:
 def render_stats_table(rows: list[dict]) -> str:
     out = ['<table><thead><tr>',
            '<th>fixture</th><th>lines</th><th>raw</th><th>user msgs (signal/total)</th>',
-           '<th>tier1 (≤25KB / ~6.25k tok)</th><th>tier2 (full)</th><th>signal</th>',
+           '<th>brief (trimmed convo)</th><th>signal</th>',
            '</tr></thead><tbody>']
     max_raw = max(r["raw_bytes"] for r in rows)
     for r in rows:
-        bar1_w = max(2, int(100 * r["tier1_bytes"] / max_raw))
-        bar2_w = max(2, int(100 * r["tier2_bytes"] / max_raw))
+        bar_w = max(2, int(100 * r["brief_bytes"] / max_raw))
         signal = (
             f"{r['decisions']} decisions · {r['files']} files · "
             f"{r['code']} code · {r['errors']} errors"
         )
         noise_pct = 100 * (r["user_total"] - r["user_signal"]) / max(1, r["user_total"])
-        fits = "✓" if r["tier1_bytes"] <= 25_000 else "✗"
-        fits_color = "#3fb950" if r["tier1_bytes"] <= 25_000 else "#f85149"
         out.append(
             f'<tr><td><code>{html.escape(r["fixture"])}</code></td>'
             f'<td>{r["lines"]:,}</td>'
             f'<td>{fmt_size(r["raw_bytes"], r["raw_tokens"])}</td>'
             f'<td><span class="invariant-good">{r["user_signal"]}/{r["user_signal"]}</span> '
             f'<span style="color:#8b949e">of {r["user_total"]} ({noise_pct:.0f}% noise)</span></td>'
-            f'<td><span class="bar-bg"><span class="bar" style="width:{bar1_w}px"></span></span> '
-            f'{fmt_size(r["tier1_bytes"], r["tier1_tokens"])} '
-            f'<span style="color:{fits_color};font-weight:600">{fits}</span></td>'
-            f'<td><span class="bar-bg"><span class="bar" style="width:{bar2_w}px;background:#3fb950"></span></span> '
-            f'{fmt_size(r["tier2_bytes"], r["tier2_tokens"])}</td>'
+            f'<td><span class="bar-bg"><span class="bar" style="width:{bar_w}px;background:#3fb950"></span></span> '
+            f'{fmt_size(r["brief_bytes"], r["brief_tokens"])} '
+            f'<span style="color:#8b949e">({r["ratio_pct"]:.1f}% of raw)</span></td>'
             f'<td>{signal}</td></tr>'
         )
     out.append('</tbody></table>')
@@ -376,11 +370,10 @@ def render_stats_table(rows: list[dict]) -> str:
 
 
 def render_brief_html(entries: list[dict], label: str) -> str:
-    tier1, _ = render_brief(entries, label, "/demo", archive_hash="abcd1234ef56...", tier2_path="/demo/session-full.md")
-    escaped = html.escape(tier1)
+    brief = render_brief(entries, label, "/demo", archive_hash="abcd1234ef56...")
+    escaped = html.escape(brief)
     escaped = escaped.replace("# Session Brief", '<h1># Session Brief</h1>', 1)
     import re as _re
-    # Match section headers (allow trailing parenthetical info like "(123)"):
     escaped = _re.sub(r"^## (.+)$", r"<h2>## \1</h2>", escaped, flags=_re.MULTILINE)
     return f'<div class="brief-preview">{escaped[:8000]}{"..." if len(escaped) > 8000 else ""}</div>'
 
@@ -402,35 +395,30 @@ def _format_brief_pane(text: str, label: str, byte_count: int, tok_count: int) -
 
 
 def render_cc_compact_compare_html(entries: list[dict], label: str) -> str:
-    """Side-by-side: our tier1 vs Claude Code's default `/compact` summary.
+    """Side-by-side: our deterministic brief vs Claude Code's default
+    `/compact` LLM summary.
 
     The comparison only renders for fixtures that actually carry a CC
     `/compact` run (`isCompactSummary: true` user entries). Sessions
-    without that flag get a placeholder noting CC's summarizer never
-    ran on this fixture — common for fresh sessions.
+    without that flag get a placeholder.
 
-    The point of this panel is to make the original motivation for the
-    project visible: our deterministic brief vs the lossy LLM
-    summarization that loses file paths, paraphrases code, and forgets
-    direction reversals."""
+    The point: make the original motivation visible. Our brief preserves
+    verbatim user msgs, file paths, decision verbs, code fences. CC's
+    summarizer paraphrases code, drops paths, forgets direction
+    reversals."""
     summaries = extract_compact_summaries(entries)
-    tier1, _ = render_brief(
-        entries, label, "/demo", archive_hash="abcd1234ef56...",
-        tier2_path="/demo/session-full.md",
-    )
-    t1_bytes = len(tier1.encode("utf-8"))
-    t1_tok = count_tokens(tier1, mode=_TOKEN_MODE)
+    brief = render_brief(entries, label, "/demo", archive_hash="abcd1234ef56...")
+    b_bytes = len(brief.encode("utf-8"))
+    b_tok = count_tokens(brief, mode=_TOKEN_MODE)
 
     if not summaries:
         return (
             f'<p style="color:#8b949e">'
             f"This fixture didn't run CC's default <code>/compact</code> — "
-            f"no <code>isCompactSummary: true</code> entries in the JSONL. "
-            f"(Our tier1 is shown below for reference; the right pane "
-            f"would normally hold CC's LLM-generated summary.)"
+            f"no <code>isCompactSummary: true</code> entries in the JSONL."
             f'</p>'
             f'<div class="diff-grid">'
-            f'{_format_brief_pane(tier1, "OUR TIER1 (deterministic)", t1_bytes, t1_tok)}'
+            f'{_format_brief_pane(brief, "OUR BRIEF (deterministic)", b_bytes, b_tok)}'
             f'<div class="diff-col"><h3>CC /compact summary <span style="color:#8b949e;font-weight:normal;font-size:0.85em;">(not present)</span></h3>'
             f'<pre class="pre" style="max-height:80vh;overflow:auto;color:#8b949e;">'
             f'No /compact summary in this fixture. Run /compact in a real '
@@ -438,7 +426,6 @@ def render_cc_compact_compare_html(entries: list[dict], label: str) -> str:
             f'</div>'
         )
 
-    # Show the most recent CC summary (last in chronological order).
     cc_text = summaries[-1]
     cc_bytes = len(cc_text.encode("utf-8"))
     cc_tok = count_tokens(cc_text, mode=_TOKEN_MODE)
@@ -446,57 +433,21 @@ def render_cc_compact_compare_html(entries: list[dict], label: str) -> str:
         f"This fixture ran CC's <code>/compact</code> "
         f"<strong>{len(summaries)}</strong> "
         f"time{'s' if len(summaries) != 1 else ''}; the most recent summary is "
-        f"shown on the right. Compare against our tier1 on the left:"
+        f"shown on the right. Compare against our brief on the left."
     )
     return (
         f'<p style="color:#8b949e">{summary_count_line}</p>'
         f'<ul style="color:#8b949e;font-size:0.92em;line-height:1.7;">'
         f'<li>CC summary is <strong>LLM-generated</strong> prose — paraphrases '
-        f'code, drops file paths, forgets direction reversals. Token cost varies '
-        f'with session length but typically 1-3k tokens.</li>'
-        f'<li>Our tier1 is <strong>deterministic extraction</strong> — preserves '
-        f'verbatim user msgs, file paths, decision verbs, code anchors. No LLM '
-        f'call.</li>'
+        f'code, drops file paths, forgets direction reversals. Typically 1-3k tokens.</li>'
+        f'<li>Our brief is <strong>deterministic extraction</strong> — preserves '
+        f'verbatim user msgs, file paths, code fences, sub-agent reports. No LLM call.</li>'
         f'<li>Look for: file paths missing on the right, decisions paraphrased '
-        f'or merged on the right, "direction reversal" user messages dropped '
-        f'on the right.</li>'
+        f'or merged on the right, direction-reversal user msgs dropped on the right.</li>'
         f'</ul>'
         f'<div class="diff-grid">'
-        f'{_format_brief_pane(tier1, "OUR TIER1 (deterministic)", t1_bytes, t1_tok)}'
+        f'{_format_brief_pane(brief, "OUR BRIEF (deterministic)", b_bytes, b_tok)}'
         f'{_format_brief_pane(cc_text, "CC /compact (LLM summary)", cc_bytes, cc_tok)}'
-        f'</div>'
-    )
-
-
-def render_tier_compare_html(entries: list[dict], label: str) -> str:
-    """Side-by-side tier1 vs tier2 for manual redundancy audit.
-
-    Renders both tiers with byte + token counts in the headers so the
-    reviewer can eyeball:
-      * how much tier1 content is also present verbatim in tier2
-      * whether tier1's synthesized sections (Active Goal, Decisions Made,
-        Result Tables) actually save the agent from reading tier2
-      * which tier2-only content (verbatim user msgs, full assistant
-        bodies, sub-agent reports) is worth the extra read"""
-    tier1, tier2 = render_brief(
-        entries, label, "/demo", archive_hash="abcd1234ef56...",
-        tier2_path="/demo/session-full.md",
-    )
-    t1_bytes = len(tier1.encode("utf-8"))
-    t2_bytes = len(tier2.encode("utf-8"))
-    t1_tok = count_tokens(tier1, mode=_TOKEN_MODE)
-    t2_tok = count_tokens(tier2, mode=_TOKEN_MODE)
-    pct = round(100 * t1_bytes / max(1, t2_bytes), 1)
-    return (
-        f'<p style="color:#8b949e">'
-        f'tier1 = {pct}% the size of tier2 by bytes. '
-        f'Look for sections in tier1 that duplicate prose already in tier2 '
-        f'(Decisions Made → assistant verb lines; Result Tables → last-3-turn '
-        f'tables; Active Goal → derived from a tier2 sentence).'
-        f'</p>'
-        f'<div class="diff-grid">'
-        f'{_format_brief_pane(tier1, "TIER1 (handon Read target)", t1_bytes, t1_tok)}'
-        f'{_format_brief_pane(tier2, "TIER2 (full trimmed convo)", t2_bytes, t2_tok)}'
         f'</div>'
     )
 
@@ -504,18 +455,16 @@ def render_tier_compare_html(entries: list[dict], label: str) -> str:
 def hero_metrics(rows: list[dict]) -> str:
     total_raw = sum(r["raw_bytes"] for r in rows)
     total_raw_tok = sum(r["raw_tokens"] for r in rows)
-    total_tier1 = sum(r["tier1_bytes"] for r in rows)
-    total_tier1_tok = sum(r["tier1_tokens"] for r in rows)
-    total_tier2 = sum(r["tier2_bytes"] for r in rows)
+    total_brief = sum(r["brief_bytes"] for r in rows)
+    total_brief_tok = sum(r["brief_tokens"] for r in rows)
     total_signal = sum(r["user_signal"] for r in rows)
     total_user = sum(r["user_total"] for r in rows)
     noise_dropped = total_user - total_signal
-    fits_count = sum(1 for r in rows if r["tier1_bytes"] <= 25_000)
+    overall_pct = 100 * total_brief / max(1, total_raw)
     return f"""
     <div class="hero-stats">
       <div class="stat-card"><span class="num">{fmt_tokens_count(total_raw_tok)}</span><span class="label">raw input across {len(rows)} fixtures ({fmt_bytes(total_raw)})</span></div>
-      <div class="stat-card"><span class="num">{fmt_tokens_count(total_tier1_tok)}</span><span class="label">tier1 total ({fmt_bytes(total_tier1)} — /handon Read target)</span></div>
-      <div class="stat-card"><span class="num invariant-good">{fits_count}/{len(rows)}</span><span class="label">fixtures with tier1 ≤ 25 KB / ~6.25k tok cap</span></div>
+      <div class="stat-card"><span class="num">{fmt_tokens_count(total_brief_tok)}</span><span class="label">brief total ({fmt_bytes(total_brief)} — {overall_pct:.1f}% of raw)</span></div>
       <div class="stat-card"><span class="num invariant-good">{total_signal}/{total_signal}</span><span class="label">signal user msgs preserved (of {total_user}; {noise_dropped} noise filtered)</span></div>
     </div>
     """
@@ -564,14 +513,12 @@ def main() -> int:
     # template, so only one fixture's DOM is "live" at a time.
     diff_templates: list[str] = []
     brief_templates: list[str] = []
-    tier_cmp_templates: list[str] = []
     cc_cmp_templates: list[str] = []
     options: list[str] = []
     for f in fixtures:
         entries = load_jsonl(str(f))
         d_html = build_diff_html(entries, max_turns=None)
         b_html = render_brief_html(entries, f.stem)
-        cmp_html = render_tier_compare_html(entries, f.stem)
         cc_html = render_cc_compact_compare_html(entries, f.stem)
         sel = " selected" if f.stem == default_fixture else ""
         stem = html.escape(f.stem)
@@ -584,9 +531,6 @@ def main() -> int:
         )
         brief_templates.append(
             f'<template id="fix-brief-{stem}" data-fixture="{stem}">{b_html}</template>'
-        )
-        tier_cmp_templates.append(
-            f'<template id="fix-tiercmp-{stem}" data-fixture="{stem}">{cmp_html}</template>'
         )
         cc_cmp_templates.append(
             f'<template id="fix-cccmp-{stem}" data-fixture="{stem}">{cc_html}</template>'
@@ -612,7 +556,6 @@ def main() -> int:
   if (!sel) return;
   var diffActive = document.getElementById("diff-active");
   var briefActive = document.getElementById("brief-active");
-  var tierCmpActive = document.getElementById("tiercmp-active");
   var ccCmpActive = document.getElementById("cccmp-active");
   if (!diffActive || !briefActive) return;
 
@@ -667,13 +610,6 @@ def main() -> int:
     briefActive.replaceChildren(briefTpl.content.cloneNode(true));
     diffActive.dataset.fixture = name;
     briefActive.dataset.fixture = name;
-    if (tierCmpActive) {
-      var tierCmpTpl = document.getElementById("fix-tiercmp-" + name);
-      if (tierCmpTpl) {
-        tierCmpActive.replaceChildren(tierCmpTpl.content.cloneNode(true));
-        tierCmpActive.dataset.fixture = name;
-      }
-    }
     if (ccCmpActive) {
       var ccCmpTpl = document.getElementById("fix-cccmp-" + name);
       if (ccCmpTpl) {
@@ -682,7 +618,6 @@ def main() -> int:
       }
     }
     bindScrollSync(diffActive);
-    bindScrollSync(tierCmpActive || document.body);
     bindScrollSync(ccCmpActive || document.body);
     // Re-apply persisted flag state to the freshly attached turns.
     if (window.__compactionRefreshFlags) window.__compactionRefreshFlags();
@@ -899,24 +834,6 @@ def main() -> int:
   </p>
   {"".join(cc_cmp_templates)}
   <div id="cccmp-active"></div>
-</section>
-
-<section>
-  <h2>Tier comparison: tier1 vs tier2 (manual redundancy audit)</h2>
-  <p style="color:#8b949e">
-    Tier1 is the file <code>/handon</code> Reads by default. Tier2
-    (<code>&lt;sid&gt;-full.md</code>) is the full trimmed convo;
-    the agent autonomously Reads it when tier1 looks thin (the
-    "Full conversation: open with Read tool when more context needed"
-    line in tier1 metadata invites this).
-    Compare panes side-by-side: tier1's "Decisions Made", "Result Tables",
-    and "Active Goal" are derived from sentences that are ALSO present
-    verbatim in tier2 — that's the redundancy you're auditing. Tier2-only
-    content (verbatim user msgs, full assistant bodies, full sub-agent
-    reports) is what makes the second Read worth it.
-  </p>
-  {"".join(tier_cmp_templates)}
-  <div id="tiercmp-active"></div>
 </section>
 
 <section>

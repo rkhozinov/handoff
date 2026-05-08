@@ -98,9 +98,10 @@ huge.jsonl      14 MB   618 KB       4.24% 392/392           64        233    41
 xhuge.jsonl     83 MB   2.6 MB       3.03% 911/911          154       1146   206    5
 ```
 
-`xhuge` produces a 2.6 MB tier1 brief; `/handon` reads only the first
-25 KB (`CLAUDE_COMPACTION_MAX_BYTES`), full brief stays on disk for an
-explicit `Read` if you need more.
+The brief is the trimmed conversation: verbatim user messages,
+substantive assistant text, code fences, file paths, sub-agent reports,
+Read-tool markers — drops tool_result bodies, thinking blocks, and
+narration noise. Single output file: `~/.claude/compaction/<sid>.md`.
 
 Reproduce: `PYTHONPATH=. python3 scripts/bench.py`
 

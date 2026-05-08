@@ -13,10 +13,10 @@ def _a(blocks: list[dict]) -> dict:
 
 
 def _brief(*args, **kwargs) -> str:
-    """Helper: join tier1 + tier2 into a single string for substring asserts.
-    Production code uses the tuple form via render_brief()."""
-    tier1, tier2 = render_brief(*args, **kwargs)
-    return tier1 + "\n" + tier2
+    """Helper: invoke render_brief() and return its single string.
+    The tier1/tier2 split was removed when the brief was simplified to
+    just the trimmed conversation; render_brief() now returns one str."""
+    return render_brief(*args, **kwargs)
 
 
 def test_render_assistant_thinking_dropped():
@@ -122,27 +122,10 @@ def test_render_assistant_dedup_preserves_distinct_markers():
     assert out == "[Read file_path=/x.py] [Read file_path=/y.py] [Read file_path=x.py]"
 
 
-def test_hard_truncate_keeps_brief_under_budget():
-    """If a brief overflows even after progressive squeeze, hard-truncate
-    must clamp it so the SessionStart hook's 25 KB cap can't reject it."""
-    from compaction.trim import _hard_truncate_bytes
-
-    big = ("line of text\n" * 5000)
-    out = _hard_truncate_bytes(big, 1000, suffix="\n[...trunc]\n")
-    assert len(out.encode("utf-8")) <= 1000
-    assert out.endswith("[...trunc]\n")
-
-
-def test_hard_truncate_passthrough_when_under_budget():
-    from compaction.trim import _hard_truncate_bytes
-
-    small = "small"
-    assert _hard_truncate_bytes(small, 1000, suffix="\n[...]\n") == small
-
-
-def test_render_brief_includes_subagent_findings_section():
-    """Brief must surface synthesized sub-agent reports — the bug we just hit
-    where 39 KB of research findings were lost across /handoff."""
+def test_render_brief_includes_subagent_findings_inline():
+    """Sub-agent reports are spliced into the brief convo as `[Sub-agent
+    report: ...]` blocks. Pinned to guarantee 39 KB of research findings
+    don't get lost across /handoff."""
     entries = [
         _u("research compaction tools"),
         _a(
@@ -179,17 +162,15 @@ def test_render_brief_includes_subagent_findings_section():
         },
     ]
     out = _brief(entries, session_id="s", cwd="/c", archive_hash=None)
-    assert "## Sub-Agent Findings" in out
+    assert "[Sub-agent report:" in out
     assert "Research CC compaction hooks" in out
     assert "general-purpose" in out
     assert "PreCompact hook exists" in out
 
 
 def test_render_brief_subagent_dispatch_dropped_when_no_report():
-    """Agent dispatch with no result attached has nothing to surface —
-    the marker itself is filtered (KEEP_MARKER_TOOLS = {Read}). The
-    description shows up via Sub-Agent Findings only when the tool_result
-    actually carries a report (covered by the test above)."""
+    """Agent dispatch with no tool_result attached has nothing to surface
+    in the brief (KEEP_MARKER_TOOLS = {Read})."""
     entries = [
         _a(
             [
@@ -205,21 +186,9 @@ def test_render_brief_subagent_dispatch_dropped_when_no_report():
             ]
         ),
     ]
-    tier1, tier2 = render_brief(entries, session_id="s", cwd="/c", archive_hash=None)
-    combined = tier1 + tier2
+    out = render_brief(entries, session_id="s", cwd="/c", archive_hash=None)
     # No bare/full Agent marker should leak through.
-    assert "[Agent" not in combined
-
-
-def test_hard_truncate_handles_multibyte_boundary():
-    """Cut must not split a UTF-8 multibyte codepoint."""
-    from compaction.trim import _hard_truncate_bytes
-
-    s = "héllo " * 500
-    out = _hard_truncate_bytes(s, 200, suffix="\n[...]\n")
-    # Round-trip encode/decode must succeed (no broken codepoints).
-    out.encode("utf-8").decode("utf-8")
-    assert len(out.encode("utf-8")) <= 200
+    assert "[Agent" not in out
 
 
 # ---------- render_brief end-to-end ----------
@@ -266,22 +235,26 @@ def _build_entries():
     ]
 
 
-def test_render_brief_includes_active_goal():
-    brief = _brief(_build_entries(), "sess123", "/proj", archive_hash="HASH")
-    assert "no, do Y instead" in brief, "active goal = last real user msg"
-
-
-def test_render_brief_includes_decisions_section():
+def test_render_brief_keeps_user_msgs_verbatim():
+    """User msgs land in the convo prose verbatim — including the most
+    recent direction reversal. The brief is the trimmed convo, so any
+    real user msg that survives the noise filter shows up as `U: ...`."""
     brief = _brief(_build_entries(), "s", "/c", "h")
-    assert "## Decisions / Direction Reversals" in brief
-    # Pin the section split on the *full* heading because there are now
-    # two sibling "## Decisions ..." headers: the user-msg-driven
-    # "Direction Reversals" and the assistant-verb-driven "Decisions Made".
-    section = brief.split("## Decisions / Direction Reversals")[1].split("##")[0]
-    assert "no, do Y instead" in section
+    assert "U: Build a feature that does X" in brief
+    assert "U: no, do Y instead" in brief
 
 
-def test_render_brief_files_touched_listed():
+def test_render_brief_includes_anti_reread_header():
+    """The anti-re-read notice is the load-bearing instruction for
+    /handon-restored sessions. Must always appear."""
+    brief = _brief(_build_entries(), "s", "/c", "h")
+    assert "Authoritative record" in brief
+    assert "do **not** re-Read" in brief
+
+
+def test_render_brief_files_appear_via_read_marker():
+    """File paths show up as `[Read file_path=...]` markers in the convo
+    when the agent Read them."""
     brief = _brief(_build_entries(), "s", "/c", "h")
     assert "/proj/main.py" in brief
 
@@ -301,16 +274,10 @@ def test_render_brief_drops_short_narration():
     assert "Let me check the file" not in brief, "narration adjacent to tool_use must be dropped"
 
 
-def test_render_brief_includes_code_anchor():
+def test_render_brief_keeps_code_fence():
+    """Code fences are preserved verbatim in the convo prose."""
     brief = _brief(_build_entries(), "s", "/c", "h")
-    assert "## Code Anchors" in brief
     assert "def y():" in brief
-
-
-def test_render_brief_includes_todo_snapshot():
-    brief = _brief(_build_entries(), "s", "/c", "h")
-    assert "## Open TodoList" in brief
-    assert "completed" in brief
 
 
 def test_render_brief_archive_hash_referenced():
@@ -318,9 +285,11 @@ def test_render_brief_archive_hash_referenced():
     assert "deadbeef" in brief
 
 
-def test_render_brief_no_archive_falls_back():
+def test_render_brief_no_archive_omits_line():
+    """When archive_hash is None, the brief simply omits the Archive
+    line — no synthetic placeholder. Less noise."""
     brief = _brief(_build_entries(), "s", "/c", None)
-    assert "NOT STORED" in brief
+    assert "Archive:" not in brief
 
 
 def test_render_brief_includes_session_metadata():
@@ -359,13 +328,13 @@ def test_render_assistant_short_text_not_capped():
 
 
 def test_render_brief_drops_file_history_snapshot():
-    """File-history-snapshot entries must not appear in tier2 (they bloat
-    without adding signal — git already records this)."""
+    """File-history-snapshot entries must not appear in the brief (they
+    bloat without adding signal — git already records this)."""
     entries = [
         _u("real user msg about deploying"),
         {"type": "file-history-snapshot", "snapshot": "x" * 5000},
         _a([{"type": "text", "text": "Sure, let me check git status."}]),
     ]
-    tier1, tier2 = render_brief(entries, session_id="s", cwd="/c", archive_hash="h")
-    # The snapshot blob should not leak into tier2.
-    assert "x" * 50 not in tier2
+    out = render_brief(entries, session_id="s", cwd="/c", archive_hash="h")
+    # The snapshot blob should not leak into the brief.
+    assert "x" * 50 not in out
