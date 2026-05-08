@@ -18,18 +18,39 @@ What it preserves verbatim:
 - every file path, line number, and tool_use marker
 - decisions, errors, todo state
 
-Steps:
+## Steps
 
-1. Determine the transcript path. Claude Code stores it at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
+Run this single bash block. The session id comes straight from
+`${CLAUDE_SESSION_ID}` — Claude Code's own substitution, so there's
+no ambiguity about which session is being archived. The transcript
+path is derived from the same session id + cwd, matching CC's
+project-dir encoding (`[^A-Za-z0-9-]` → `-`).
 
-2. Run:
-   ```bash
-   cd ~/repos/claude-compaction && PYTHONPATH=. python3 -m compaction.cli \
-     --transcript "$TRANSCRIPT" \
-     --session-id "$SESSION_ID" \
-     --cwd "$PWD"
-   ```
+```bash
+SID="${CLAUDE_SESSION_ID}"
+REAL_CWD=$(pwd -P)
+ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
+TRANSCRIPT="$HOME/.claude/projects/$ENC/$SID.jsonl"
 
-3. Print the brief path and the memory doc hash to the user. Tell them: **run `/clear` next, then `/handon` when you want the brief restored.** Restoration is explicit — no SessionStart hook auto-injection.
+if [ -z "$SID" ] || [ ! -f "$TRANSCRIPT" ]; then
+  echo "HANDOFF_ERROR sid=$SID transcript=$TRANSCRIPT"
+  exit 1
+fi
 
-If the trimmer dropped something you actually needed, recall it from the full archive: `memory doc get <hash>`.
+cd ~/repos/claude-compaction && PYTHONPATH=. python3 -m compaction.cli \
+  --transcript "$TRANSCRIPT" \
+  --session-id "$SID" \
+  --cwd "$REAL_CWD"
+```
+
+Stdout from the cli is the absolute path of the tier1 brief — copy
+that path back to the user, then tell them:
+
+> Run `/clear` to free context, then `/handon <path>` when you want
+> the brief restored. (Bare `/handon` also works — it falls back to
+> the most recent brief for this cwd — but passing the explicit path
+> is the safe choice because `/clear` creates a NEW session id, so
+> the auto-discovery has to walk back to the pre-clear session.)
+
+If the trimmer dropped something you actually needed, recall it from
+the full archive: `memory doc get <hash>` (hash printed on stderr).

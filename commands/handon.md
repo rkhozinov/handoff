@@ -1,53 +1,91 @@
 ---
-description: Explicitly restore the latest /handoff brief for the current session into the conversation. Run after /clear when you want context back. Restoration is always explicit — there is no SessionStart auto-restore hook.
+description: Restore a /handoff brief into the conversation. Pass the brief path explicitly (recommended after /clear) or let it auto-discover the most recent brief for this cwd.
+argument-hint: "[brief-path]"
 ---
 
-Restore the /handoff brief for the **current session** into the conversation.
+Restore a /handoff brief into the conversation.
 
-The brief is keyed on `session_id` — not on cwd, not on branch. Claude Code keeps
-the same `session_id` across `/clear` and across `claude -c` resume, so this
-deterministically recovers the right brief no matter which worktree or branch
-you're in.
+`/clear` creates a **new session id**, so the brief saved by the
+pre-clear `/handoff` lives under the OLD session id. That means
+auto-discovery from `${CLAUDE_SESSION_ID}` alone WON'T find it. The
+right way to call /handon after /clear is with the explicit path
+that `/handoff` printed to you.
 
-Run this single bash block — do **not** split it into multiple shell calls,
-because `SID` and `BRIEF` are shell variables that don't survive across
-separate invocations:
+Behavior:
+
+* `/handon <path>` — Read that path directly. Use this when /handoff
+  printed a path to you, especially after a `/clear`.
+* `/handon` (no args) — Auto-discover. Tries `${CLAUDE_SESSION_ID}.md`
+  first; if missing (typical after /clear), walks the JSONLs in this
+  cwd's project dir from newest to oldest and reads the first matching
+  brief; if nothing matches, falls back to a picker.
+
+## Resolution
+
+Run this single bash block. It accepts an optional argument
+(`$ARGUMENTS`) and prints either `BRIEF_PATH=<path>` or
+`BRIEF_MISSING <reason>`. The outer agent branches on stdout, never
+on shell variable state across calls.
 
 ```bash
-REAL_CWD=$(pwd -P)
-ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
-PROJECT_DIR="$HOME/.claude/projects/$ENC"
-SID=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl)
-BRIEF="$HOME/.claude/compaction/${SID}.md"
-if [ -n "$SID" ] && [ -f "$BRIEF" ]; then
+ARG="$ARGUMENTS"
+COMPACTION_DIR="$HOME/.claude/compaction"
+
+resolve_brief() {
+  # 1. Explicit path argument wins.
+  if [ -n "$ARG" ]; then
+    P="$ARG"
+    [ "${P#/}" = "$P" ] && P="$PWD/$P"  # relative → absolute
+    if [ -f "$P" ]; then
+      printf '%s' "$P"; return 0
+    fi
+    # Maybe the user passed just a session id; try that.
+    if [ -f "$COMPACTION_DIR/$ARG.md" ]; then
+      printf '%s' "$COMPACTION_DIR/$ARG.md"; return 0
+    fi
+    return 1
+  fi
+
+  # 2. Current session id (rare success case — only when /handoff was
+  # run AFTER the most recent /clear).
+  CUR="$COMPACTION_DIR/${CLAUDE_SESSION_ID}.md"
+  if [ -f "$CUR" ]; then
+    printf '%s' "$CUR"; return 0
+  fi
+
+  # 3. Walk this cwd's project dir from newest to oldest, return the
+  # first session that has a saved brief. This recovers the pre-clear
+  # session automatically.
+  REAL_CWD=$(pwd -P)
+  ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
+  PROJECT_DIR="$HOME/.claude/projects/$ENC"
+  for jl in $(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null); do
+    SID=$(basename "$jl" .jsonl)
+    [ -f "$COMPACTION_DIR/$SID.md" ] && { printf '%s' "$COMPACTION_DIR/$SID.md"; return 0; }
+  done
+  return 1
+}
+
+if BRIEF=$(resolve_brief); then
   echo "BRIEF_PATH=$BRIEF"
 else
-  echo "BRIEF_MISSING sid=$SID"
+  echo "BRIEF_MISSING arg=$ARG sid=${CLAUDE_SESSION_ID}"
 fi
 ```
 
-Decision tree based on the script's stdout:
+Decision tree based on stdout:
 
-* `BRIEF_PATH=<path>` printed → that's the file. Read it with the Read
-  tool and treat its contents as ground-truth context for the resumed
-  work — Active Goal, Open Question, Decisions Made, Conversation Arc,
-  Plans Saved, Sub-Agent Findings all override anything you might
-  otherwise infer.
+* `BRIEF_PATH=<path>` → Read it with the Read tool. Treat its contents
+  as ground-truth context for the resumed work — Active Goal, Open
+  Question, Decisions Made, Conversation Arc, Plans Saved, Sub-Agent
+  Findings all override anything you'd otherwise infer.
 
-* `BRIEF_MISSING ...` printed → no /handoff was ever run for this
-  session. Fall back: render an enriched list of recent briefs so the
-  user can pick the right one based on cwd, active goal, and open
-  question — not just the session id.
-
-  Run this single block; it walks the 10 newest non-consumed briefs
-  and emits one structured stanza per brief:
+* `BRIEF_MISSING ...` → No brief found by either explicit path or
+  auto-discovery. Show the enriched picker so the user can choose:
 
   ```bash
-  printf 'Recent briefs (newest first). Reply with the number or the session id of the brief to load.\n\n'
+  printf 'No brief found for current cwd. Recent briefs (newest first). Reply with the number or session id.\n\n'
   i=0
-  # Only list session-id briefs (UUID-shaped basenames). Filters out
-  # legacy `latest-<slug>` symlinks, `consumed-*`, `-full.md`, and any
-  # test fixture names like `prev-session-test.md`.
   for f in $(ls -t "$HOME/.claude/compaction/"*.md 2>/dev/null \
               | grep -E '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$' \
               | grep -v -E '/consumed-|-full\.md$'); do
@@ -68,17 +106,12 @@ Decision tree based on the script's stdout:
   done
   ```
 
-  Then ask the user "Which brief?" — accept either the number from the
-  list or a session id prefix. Read that file with the Read tool.
+  Accept the user's pick (number or session id prefix) and re-run
+  `/handon <path>` for the chosen brief.
 
 After loading, print one line confirming what was restored:
 `Restored: <session_id> from <ts>, <N> decisions`.
 
-There is **no freshness gate**. With `session_id` as the lookup key,
-existence of the brief is equivalent to correctness — there's no risk
-of loading a different session's brief by accident. A brief that hasn't
-been refreshed in days is still the right brief for THIS session.
-
 This command is idempotent — invoking it twice loads the same brief
-twice. It does not consume or rename any file, so you can re-run
-`/handon` whenever context resets again.
+twice. It does not consume or rename any file, so re-run `/handon`
+whenever context resets again.
