@@ -26,7 +26,7 @@ from compaction.trim import render_brief
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def stats_for(fixture: Path, token_mode: str = "auto", semantic_dedup: bool = False) -> dict:
+def stats_for(fixture: Path, token_mode: str = "auto") -> dict:
     raw = fixture.read_bytes()
     raw_text = raw.decode("utf-8", errors="replace")
     entries = load_jsonl(str(fixture))
@@ -38,7 +38,6 @@ def stats_for(fixture: Path, token_mode: str = "auto", semantic_dedup: bool = Fa
         session_id=fixture.stem,
         cwd="/bench",
         archive_hash=None,
-        semantic_dedup=semantic_dedup,
     )
     tier1_bytes = len(tier1.encode("utf-8"))
     tier2_bytes = len(tier2.encode("utf-8"))
@@ -89,11 +88,6 @@ def main() -> int:
         help="Fixture dir (defaults to raw; falls back to scrubbed)",
     )
     ap.add_argument(
-        "--semantic-dedup",
-        action="store_true",
-        help="Enable Model2Vec adjacent-paraphrase dedup before rendering.",
-    )
-    ap.add_argument(
         "--token-mode",
         choices=VALID_MODES,
         default="auto",
@@ -117,10 +111,7 @@ def main() -> int:
         print(f"No fixtures in {fdir} — skipping bench (run scripts/collect_fixtures.py locally).")
         return 0
 
-    rows = [
-        stats_for(f, token_mode=args.token_mode, semantic_dedup=args.semantic_dedup)
-        for f in fixtures
-    ]
+    rows = [stats_for(f, token_mode=args.token_mode) for f in fixtures]
 
     print(f"Fixtures from: {fdir}\n")
     print(fmt_table(rows))

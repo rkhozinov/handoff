@@ -447,7 +447,6 @@ def render_brief(
     last_user_msgs: int = 20,
     recalled_memories: list[str] | None = None,
     agent_report_limit: int = 5,
-    semantic_dedup: bool = False,
 ) -> tuple[str, str]:
     """Render both tiers. Returns (tier1, tier2).
 
@@ -467,11 +466,6 @@ def render_brief(
     agent_reports_tier2 = extract_agent_reports(entries, max_chars=0)
 
     convo = build_convo(entries)
-
-    if semantic_dedup:
-        from compaction.dedup import semantic_dedup as _sem_dedup
-
-        convo, _dropped = _sem_dedup(convo)
 
     iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
