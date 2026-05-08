@@ -37,20 +37,33 @@ if [ -z "$SID" ] || [ ! -f "$TRANSCRIPT" ]; then
   exit 1
 fi
 
-cd ~/repos/claude-compaction && PYTHONPATH=. python3 -m compaction.cli \
-  --transcript "$TRANSCRIPT" \
-  --session-id "$SID" \
-  --cwd "$REAL_CWD"
+BRIEF_PATH=$(
+  cd ~/repos/claude-compaction && PYTHONPATH=. python3 -m compaction.cli \
+    --transcript "$TRANSCRIPT" \
+    --session-id "$SID" \
+    --cwd "$REAL_CWD"
+)
+echo "HANDOFF_OK"
+echo "  session_id: $SID"
+echo "  brief:      $BRIEF_PATH"
+echo
+echo "Restore with either:"
+echo "  /handon $SID"
+echo "  /handon $BRIEF_PATH"
 ```
 
-Stdout from the cli is the absolute path of the tier1 brief — copy
-that path back to the user, then tell them:
+Surface the **session id** to the user prominently — that's the
+safest deterministic key for /handon. Many cwds carry multiple
+parallel sessions, so picking the right brief by anything other than
+its session id is guesswork.
 
-> Run `/clear` to free context, then `/handon <path>` when you want
-> the brief restored. (Bare `/handon` also works — it falls back to
-> the most recent brief for this cwd — but passing the explicit path
-> is the safe choice because `/clear` creates a NEW session id, so
-> the auto-discovery has to walk back to the pre-clear session.)
+Tell the user:
+
+> Run `/clear` to free context, then `/handon <session_id>` when you
+> want THIS session's brief restored. The session id was just printed
+> above — copy it. (Bare `/handon` exists but auto-discovery picks the
+> newest brief for this cwd, which is non-deterministic when several
+> sessions share the directory.)
 
 If the trimmer dropped something you actually needed, recall it from
 the full archive: `memory doc get <hash>` (hash printed on stderr).

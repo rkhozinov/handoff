@@ -1,24 +1,36 @@
 ---
-description: Restore a /handoff brief into the conversation. Pass the brief path explicitly (recommended after /clear) or let it auto-discover the most recent brief for this cwd.
-argument-hint: "[brief-path]"
+description: Restore a /handoff brief into the conversation. Pass the session id (printed by /handoff) for deterministic restore. Bare /handon falls back to the newest brief in this cwd, which is unreliable when multiple sessions share the directory.
+argument-hint: "[session-id|brief-path]"
 ---
 
 Restore a /handoff brief into the conversation.
 
+**Recommended: pass the session id `/handoff` printed.** That's the
+only deterministic way to pick the right brief when this cwd has
+multiple parallel sessions:
+
+```
+/handon ff6c4f4a-1a60-4a2c-9b96-abd23445b743
+```
+
 `/clear` creates a **new session id**, so the brief saved by the
-pre-clear `/handoff` lives under the OLD session id. That means
-auto-discovery from `${CLAUDE_SESSION_ID}` alone WON'T find it. The
-right way to call /handon after /clear is with the explicit path
-that `/handoff` printed to you.
+pre-clear `/handoff` lives under the OLD session id. Bare `/handon`
+auto-discovery walks newest-to-oldest jsonls in this cwd, but if
+several sessions ran handoffs today it picks the most recent one,
+which may not be the session you wanted. Pass the session id to
+remove the guesswork.
 
 Behavior:
 
-* `/handon <path>` — Read that path directly. Use this when /handoff
-  printed a path to you, especially after a `/clear`.
+* `/handon <session-id>` — Resolve to `~/.claude/compaction/<sid>.md`
+  and Read it. **Recommended path.**
+* `/handon <full-path>` — Read the absolute path directly. Useful
+  when the brief lives outside the default compaction dir.
 * `/handon` (no args) — Auto-discover. Tries `${CLAUDE_SESSION_ID}.md`
-  first; if missing (typical after /clear), walks the JSONLs in this
-  cwd's project dir from newest to oldest and reads the first matching
-  brief; if nothing matches, falls back to a picker.
+  first; if missing (typical after /clear), walks JSONLs in this
+  cwd's project dir from newest to oldest and reads the first one
+  with a saved brief; falls back to a picker if none match.
+  **Non-deterministic when multiple sessions share the cwd.**
 
 ## Resolution
 
