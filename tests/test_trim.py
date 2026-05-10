@@ -13,9 +13,6 @@ def _a(blocks: list[dict]) -> dict:
 
 
 def _brief(*args, **kwargs) -> str:
-    """Helper: invoke render_brief() and return its single string.
-    The tier1/tier2 split was removed when the brief was simplified to
-    just the trimmed conversation; render_brief() now returns one str."""
     return render_brief(*args, **kwargs)
 
 
@@ -310,7 +307,7 @@ def test_render_brief_signal_user_msgs_verbatim():
 
 def test_render_assistant_caps_long_text():
     """A single very long assistant text turn should be truncated with a marker
-    so tier2 doesn't carry 6+ KB of one reasoning block."""
+    so the brief doesn't carry 6+ KB of one reasoning block."""
     long_text = "x" * 10_000
     e = _a([{"type": "text", "text": long_text}])
     out = render_assistant(e)

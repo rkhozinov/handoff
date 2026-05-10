@@ -18,13 +18,10 @@ Preserves verbatim:
   * every code fence
   * every file path / line number / tool_use marker
 
-Output is tiered:
-  * tier1 — must-have summary (~<=20 KB target): metadata, archive ref,
-    active goal, last N decisions, files touched, open todos, errors,
-    code anchors, last 20 signal user msgs. Suitable for `/handon` Read
-    injection (25 KB hard cap).
-  * tier2 — full trimmed conversation transcript with squeezed markers.
-    Lives on disk, referenced from tier1 metadata for on-demand `Read`.
+Output: a single brief file per session (`<session_id>.md`) — header
+with session metadata + anti-re-read notice + the trimmed conversation.
+The full session transcript stays in the memory doc archive for
+forensic recovery if the brief loses something useful.
 """
 from __future__ import annotations
 
@@ -32,6 +29,7 @@ import re
 from datetime import datetime, timezone
 
 from compaction.extract import (
+    AGENT_REPORT_MIN_CHARS,
     SUBAGENT_TOOL_NAMES,
     assistant_blocks,
     DROP_TOP_TYPES,
@@ -63,7 +61,7 @@ def _classify_assistant(
     """Return (joined_text, tool_markers) split out of the entry's blocks.
     Thinking blocks are silently dropped here. Per-turn text exceeding
     ASSISTANT_TURN_MAX_CHARS is truncated with a marker so the full body
-    stays in the memory doc archive but tier2 doesn't bloat."""
+    stays in the memory doc archive but the brief doesn't bloat."""
     text_parts: list[str] = []
     tool_markers: list[str] = []
     for b in assistant_blocks(entry):
@@ -289,9 +287,8 @@ def _render_brief(
 
 def build_convo(entries: list[dict]) -> list[tuple[str, str]]:
     """Run the trimmer's convo-build phase and return `(role, text)` tuples
-    after `_collapse_repeats` but BEFORE semantic dedup. Exposed so the
-    audit / debug path (`render_html` dedup section) can replay the exact
-    same convo without re-rendering both tiers."""
+    after `_collapse_repeats`. Exposed so the audit / debug path
+    (`render_html` dedup section) can replay the exact same convo."""
     agent_use_meta: dict[str, tuple[str, str]] = {}
     for e in entries:
         if e.get("type") != "assistant":
@@ -344,7 +341,7 @@ def build_convo(entries: list[dict]) -> list[tuple[str, str]]:
                         elif isinstance(tc, str):
                             text = tc
                     text = (text or "").strip()
-                    if len(text) >= 200:
+                    if len(text) >= AGENT_REPORT_MIN_CHARS:
                         desc = meta[0] or "(no description)"
                         sub = f" {meta[1]}" if meta[1] else ""
                         convo.append(("assistant", f"[Sub-agent report:{sub} {desc}]\n{text}"))
@@ -361,19 +358,8 @@ def render_brief(
     session_id: str,
     cwd: str,
     archive_hash: str | None,
-    **_legacy_kwargs,
 ) -> str:
-    """Render the session brief: anti-re-read header + full trimmed convo.
-
-    Single output (no tier split). The whole brief is what `/handon`
-    Reads. This replaces the prior tier1/tier2 design — empirical
-    review (2026-05-08) found the trimmed convo more useful than the
-    extracted-sections summary, even at ~3x the bytes.
-
-    `_legacy_kwargs` is accepted-but-ignored so older callers (tests,
-    bench scripts) that still pass `tier2_path=` / `recalled_memories=`
-    don't break during the cutover.
-    """
+    """Render the session brief: anti-re-read header + trimmed conversation."""
     convo = build_convo(entries)
     iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return _render_brief(iso, session_id, cwd, archive_hash, convo)

@@ -812,13 +812,13 @@ def main() -> int:
 <section>
   <h2>Generated brief structure</h2>
   <p>This is what <code>/handoff</code> writes to <code>~/.claude/compaction/&lt;session_id&gt;.md</code>
-  and what <code>/handon</code> reads back into the next session (head, capped at 25 KB):</p>
+  and what <code>/handon</code> reads back into the next session:</p>
   {"".join(brief_templates)}
   <div id="brief-active"></div>
 </section>
 
 <section>
-  <h2>Our tier1 vs Claude Code's <code>/compact</code> (the original motivation)</h2>
+  <h2>Our brief vs Claude Code's <code>/compact</code> (the original motivation)</h2>
   <p style="color:#8b949e">
     The whole point of this project is that CC's default
     <code>/compact</code> runs an LLM summarizer over the session

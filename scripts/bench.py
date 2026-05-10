@@ -83,7 +83,7 @@ def main() -> int:
         choices=VALID_MODES,
         default="auto",
         help=(
-            "Tokenizer used for tok_in / tier{1,2}_tok columns. "
+            "Tokenizer used for tok_in / brief_tok columns. "
             "'auto' (default) uses the HF tokenizer when available and "
             "falls back to chars/4. See compaction.tokenizer for details."
         ),

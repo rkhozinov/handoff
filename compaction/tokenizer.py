@@ -36,7 +36,7 @@ _ANTHROPIC_CLIENTS: dict[str, Any] = {}
 
 # Model identifiers — kept here so callers don't have to remember them.
 _HF_MODEL = "Xenova/claude-tokenizer"
-_ANTHROPIC_MODEL = "claude-opus-4-5"
+_ANTHROPIC_MODEL = "claude-opus-4-7"
 
 VALID_MODES = ("auto", "hf", "api", "chars4")
 
