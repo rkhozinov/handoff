@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from compaction import extract
+from handoff import extract
 
 
 # ---------- is_real_user / user_text ----------

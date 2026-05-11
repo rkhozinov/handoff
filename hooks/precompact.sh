@@ -12,8 +12,8 @@
 #   {"matcher": "auto",   "hooks": [{"type":"command","command":"<this-file>"}]}
 set -euo pipefail
 
-PROJECT_ROOT="${CLAUDE_COMPACTION_ROOT:-$HOME/repos/handoff}"
-PYTHON="${CLAUDE_COMPACTION_PYTHON:-python3}"
+PROJECT_ROOT="${HANDOFF_ROOT:-$HOME/repos/handoff}"
+PYTHON="${HANDOFF_PYTHON:-python3}"
 
 input=$(cat)
 transcript=$(echo "$input" | jq -r '.transcript_path // empty')
@@ -27,12 +27,12 @@ fi
 
 brief_path=$(
   cd "$PROJECT_ROOT" && \
-  PYTHONPATH=. "$PYTHON" -m compaction.cli \
+  PYTHONPATH=. "$PYTHON" -m handoff.cli \
     --transcript "$transcript" \
     --session-id "$session" \
-    --cwd "${cwd:-$PWD}" 2>/tmp/cc-handoff-stderr.log
+    --cwd "${cwd:-$PWD}" 2>/tmp/handoff-stderr.log
 ) || {
-  echo "[precompact] cc-handoff failed; see /tmp/cc-handoff-stderr.log" >&2
+  echo "[precompact] handoff failed; see /tmp/handoff-stderr.log" >&2
   exit 0
 }
 

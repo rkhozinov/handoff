@@ -1,13 +1,13 @@
 """Tests for the optional memory-recall integration."""
 from __future__ import annotations
 
-from compaction import recall
+from handoff import recall
 
 
 # ---------- project_tag_from_cwd ----------
 
 def test_project_tag_basename():
-    assert recall.project_tag_from_cwd("/Users/x/repos/claude-compaction") == "project:claude-compaction"
+    assert recall.project_tag_from_cwd("/Users/x/repos/handoff") == "project:handoff"
 
 
 def test_project_tag_trailing_slash():

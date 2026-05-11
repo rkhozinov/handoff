@@ -10,7 +10,7 @@ import html
 import json
 from pathlib import Path
 
-from compaction.extract import (
+from handoff.extract import (
     assistant_blocks,
     extract_code_anchors,
     extract_compact_summaries,
@@ -23,8 +23,8 @@ from compaction.extract import (
     load_jsonl,
     user_text,
 )
-from compaction.tokenizer import VALID_MODES, count_tokens
-from compaction.trim import _classify_assistant, render_assistant, render_brief
+from handoff.tokenizer import VALID_MODES, count_tokens
+from handoff.trim import _classify_assistant, render_assistant, render_brief
 
 # Filled in by main() once CLI args are parsed; defaults to "auto" so the
 # helpers also work when imported directly from a test or REPL.
@@ -481,7 +481,7 @@ def main() -> int:
         help=(
             "Tokenizer used for the report's token figures. 'auto' (default) "
             "uses the offline HF tokenizer when available, else the chars/4 "
-            "heuristic. See compaction.tokenizer."
+            "heuristic. See handoff.tokenizer."
         ),
     )
     args = ap.parse_args()
@@ -736,8 +736,8 @@ def main() -> int:
                   │
                   ▼
     ┌─────────────────────────────────────┐
-    │      cc-handoff CLI (Python)        │
-    │   compaction.cli → compaction.trim  │
+    │      handoff CLI (Python)        │
+    │   handoff.cli → handoff.trim  │
     └────────┬───────────────────┬────────┘
              │                   │
              ▼                   ▼
@@ -765,12 +765,12 @@ def main() -> int:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>claude-compaction · raw vs trimmed</title>
+<title>handoff · raw vs trimmed</title>
 <style>{CSS}</style>
 </head>
 <body>
 <header>
-  <h1>claude-compaction</h1>
+  <h1>handoff</h1>
   <div class="tagline">Replacing Claude Code's lossy <code>/compact</code> with deterministic trim + memory archive · <code>/handoff</code></div>
 </header>
 

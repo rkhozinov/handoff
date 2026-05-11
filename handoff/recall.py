@@ -15,7 +15,7 @@ from typing import Optional
 def project_tag_from_cwd(cwd: str) -> str:
     """Return a `project:<basename>` tag matching the storage convention used
     elsewhere in the user's memory store. cwd basename is the project folder
-    name (e.g. `claude-compaction`)."""
+    name (e.g. `handoff`)."""
     base = os.path.basename(os.path.normpath(cwd))
     return f"project:{base}" if base else ""
 

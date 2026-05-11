@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CC_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 
-echo "Installing claude-compaction from $ROOT into $CC_HOME"
+echo "Installing handoff from $ROOT into $CC_HOME"
 
 # 1. Make scripts executable
 chmod +x "$ROOT/hooks/precompact.sh" "$ROOT/hooks/context-warn.sh"
@@ -76,7 +76,7 @@ if isinstance(ss, list):
         hooks.pop("SessionStart", None)
 
 # Stop: context-fill warning. Surfaces a one-line warning in the user's
-# transcript when context crosses CLAUDE_COMPACTION_CONTEXT_THRESHOLD
+# transcript when context crosses HANDOFF_CONTEXT_THRESHOLD
 # (default 70%) of the model window.
 stop = hooks.setdefault("Stop", [])
 if not any(e.get("matcher") in ("", None) and has([e], context_cmd) for e in stop):

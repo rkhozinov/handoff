@@ -1,4 +1,4 @@
-"""Tests for compaction.tokenizer.
+"""Tests for handoff.tokenizer.
 
 The tokenizer module exposes one canonical entry point — `count_tokens(text,
 mode=...)`. These tests pin down each mode's contract without requiring any
@@ -13,8 +13,8 @@ import sys
 
 import pytest
 
-from compaction import tokenizer
-from compaction.tokenizer import VALID_MODES, count_tokens
+from handoff import tokenizer
+from handoff.tokenizer import VALID_MODES, count_tokens
 
 
 # ---------------------------------------------------------------- chars4 ----

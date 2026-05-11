@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from compaction.extract import iter_signal_user_msgs, load_jsonl
-from compaction.trim import render_brief
+from handoff.extract import iter_signal_user_msgs, load_jsonl
+from handoff.trim import render_brief
 
 
 def _brief(*args, **kwargs) -> str:

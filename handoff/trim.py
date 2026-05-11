@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from compaction.extract import (
+from handoff.extract import (
     AGENT_REPORT_MIN_CHARS,
     SUBAGENT_TOOL_NAMES,
     assistant_blocks,
@@ -320,7 +320,7 @@ def build_convo(entries: list[dict]) -> list[tuple[str, str]]:
         elif e.get("type") == "user":
             c = e.get("message", {}).get("content")
             if isinstance(c, list):
-                from compaction.extract import _agent_report_text_from_tooluseresult
+                from handoff.extract import _agent_report_text_from_tooluseresult
 
                 tur_text = _agent_report_text_from_tooluseresult(e.get("toolUseResult"))
                 for b in c:

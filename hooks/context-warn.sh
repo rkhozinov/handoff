@@ -12,12 +12,12 @@
 #   {"matcher": "", "hooks": [{"type":"command","command":"<this-file>"}]}
 #
 # Env:
-#   CLAUDE_COMPACTION_CONTEXT_THRESHOLD — fraction (0.0-1.0), default 0.70
-#   CLAUDE_COMPACTION_CONTEXT_WINDOW    — override window in tokens
+#   HANDOFF_CONTEXT_THRESHOLD — fraction (0.0-1.0), default 0.70
+#   HANDOFF_CONTEXT_WINDOW    — override window in tokens
 set -euo pipefail
 
-THRESHOLD="${CLAUDE_COMPACTION_CONTEXT_THRESHOLD:-0.70}"
-OVERRIDE_WINDOW="${CLAUDE_COMPACTION_CONTEXT_WINDOW:-}"
+THRESHOLD="${HANDOFF_CONTEXT_THRESHOLD:-0.70}"
+OVERRIDE_WINDOW="${HANDOFF_CONTEXT_WINDOW:-}"
 
 input=$(cat)
 transcript=$(echo "$input" | jq -r '.transcript_path // empty')

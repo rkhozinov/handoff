@@ -1,7 +1,7 @@
 """Behavioral tests for render_brief + render_assistant."""
 from __future__ import annotations
 
-from compaction.trim import render_assistant, render_brief
+from handoff.trim import render_assistant, render_brief
 
 
 def _u(s: str) -> dict:
@@ -300,7 +300,7 @@ def test_render_brief_signal_user_msgs_verbatim():
     (Noise like short acks or skill body re-pastes is intentionally filtered.)"""
     entries = _build_entries()
     brief = _brief(entries, "s", "/c", "h")
-    from compaction.extract import iter_signal_user_msgs
+    from handoff.extract import iter_signal_user_msgs
     for m in iter_signal_user_msgs(entries):
         assert m in brief, f"signal user msg lost: {m!r}"
 

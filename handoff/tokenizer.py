@@ -19,7 +19,7 @@ Modes
 
 Usage
 -----
-    from compaction.tokenizer import count_tokens
+    from handoff.tokenizer import count_tokens
     n = count_tokens("hello world")              # auto mode
     n = count_tokens("hi", mode="chars4")        # explicit
 """
@@ -80,7 +80,7 @@ def _count_api(text: str) -> int:
     except ImportError as e:
         raise RuntimeError(
             "count_tokens(mode='api') requires the `anthropic` package "
-            "(`pip install claude-compaction[api]`)."
+            "(`pip install handoff[api]`)."
         ) from e
 
     client = _ANTHROPIC_CLIENTS.get(api_key)

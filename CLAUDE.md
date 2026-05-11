@@ -1,4 +1,4 @@
-# claude-compaction — Claude Code instructions
+# handoff — Claude Code instructions
 
 Read README.md first for project intent. This file = working notes for
 Claude sessions in this repo.
@@ -26,27 +26,27 @@ regression — fix the filter, don't relax the invariant.
 
 ## Module layout
 
-- `compaction/extract.py` — pure extraction helpers over JSONL entries
+- `handoff/extract.py` — pure extraction helpers over JSONL entries
   (`is_real_user`, `user_text`, `assistant_blocks`, `iter_*_user_msgs`,
   `short_tool_input`, `extract_agent_reports`, `extract_decisions/...`
   used by bench/report stats only).
-- `compaction/trim.py` — `render_brief(entries, sid, cwd, archive_hash)`.
+- `handoff/trim.py` — `render_brief(entries, sid, cwd, archive_hash)`.
   `build_convo` exposed for the report's audit panel.
-- `compaction/cli.py` — orchestrator: load_jsonl → archive → render → write.
-- `compaction/recall.py` — `project_tag_from_cwd` + `store_agent_reports`.
+- `handoff/cli.py` — orchestrator: load_jsonl → archive → render → write.
+- `handoff/recall.py` — `project_tag_from_cwd` + `store_agent_reports`.
   That's it. Older `build_query`/`search_memories`/`format_memory_line`
   were ripped (no callers post-tier1).
-- `compaction/tokenizer.py` — pluggable `count_tokens(text, mode)`:
+- `handoff/tokenizer.py` — pluggable `count_tokens(text, mode)`:
   `chars4` (default fallback), `hf` (Xenova/claude-tokenizer), `api`
   (Anthropic SDK), `auto` (HF if importable else chars4). Lazy imports —
   don't hoist `transformers`/`anthropic` to module level.
-- `compaction/__init__.py` — empty marker.
+- `handoff/__init__.py` — empty marker.
 - `scripts/bench.py`, `scripts/render_html.py` — dev tools, not shipped
   via `/handoff`.
 
 ## Don't reintroduce
 
-- `compaction/segment.py` was deleted (B2 idea, never wired).
+- `handoff/segment.py` was deleted (B2 idea, never wired).
 - `tier1`/`tier2` vocabulary in docstrings, comments, or symbols.
 - `**_legacy_kwargs` shims on `render_brief`.
 - Magic literals for the agent-report cutoff — use `AGENT_REPORT_MIN_CHARS`.
@@ -72,7 +72,7 @@ PYTHONPATH=. python3 scripts/render_html.py       # docs/report.html (gitignored
 End-to-end smoke:
 
 ```bash
-PYTHONPATH=. python3 -m compaction.cli \
+PYTHONPATH=. python3 -m handoff.cli \
   --transcript tests/fixtures/raw/small.jsonl \
   --session-id smoke --cwd /tmp \
   --no-archive --out-dir /tmp/smoke

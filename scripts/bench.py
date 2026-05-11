@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from compaction.extract import (
+from handoff.extract import (
     extract_code_anchors,
     extract_decisions,
     extract_errors,
@@ -20,8 +20,8 @@ from compaction.extract import (
     iter_signal_user_msgs,
     load_jsonl,
 )
-from compaction.tokenizer import VALID_MODES, count_tokens
-from compaction.trim import render_brief
+from handoff.tokenizer import VALID_MODES, count_tokens
+from handoff.trim import render_brief
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -85,7 +85,7 @@ def main() -> int:
         help=(
             "Tokenizer used for tok_in / brief_tok columns. "
             "'auto' (default) uses the HF tokenizer when available and "
-            "falls back to chars/4. See compaction.tokenizer for details."
+            "falls back to chars/4. See handoff.tokenizer for details."
         ),
     )
     args = ap.parse_args()

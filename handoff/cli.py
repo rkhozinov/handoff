@@ -1,4 +1,4 @@
-"""CLI entrypoint: `cc-handoff --transcript ... --session-id ... --cwd ...`.
+"""CLI entrypoint: `handoff --transcript ... --session-id ... --cwd ...`.
 
 Writes one file: `~/.claude/compaction/<session_id>.md` — the trimmed
 session brief that `/handon` Reads back.
@@ -14,16 +14,16 @@ import os
 import sys
 from pathlib import Path
 
-from compaction.archive import archive_full_session
-from compaction.extract import extract_agent_reports, load_jsonl
-from compaction.recall import project_tag_from_cwd, store_agent_reports
-from compaction.tokenizer import VALID_MODES, count_tokens
-from compaction.trim import render_brief
+from handoff.archive import archive_full_session
+from handoff.extract import extract_agent_reports, load_jsonl
+from handoff.recall import project_tag_from_cwd, store_agent_reports
+from handoff.tokenizer import VALID_MODES, count_tokens
+from handoff.trim import render_brief
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        prog="cc-handoff",
+        prog="handoff",
         description="Trim a Claude Code transcript into a Session Brief and archive the full transcript.",
     )
     p.add_argument("--transcript", required=True, help="Path to JSONL transcript")
