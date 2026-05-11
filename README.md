@@ -55,8 +55,8 @@ user runs /handon → loads brief into the new session
 ## Install
 
 ```bash
-git clone https://github.com/<you>/claude-compaction ~/repos/claude-compaction
-cd ~/repos/claude-compaction
+git clone https://github.com/<you>/claude-compaction ~/repos/handoff
+cd ~/repos/handoff
 ./install.sh
 ```
 
@@ -149,7 +149,7 @@ assistant entry's usage block), fires once per turn.
 
 Hook env vars:
 
-- `CLAUDE_COMPACTION_ROOT` — path to this repo (default `~/repos/claude-compaction`)
+- `CLAUDE_COMPACTION_ROOT` — path to this repo (default `~/repos/handoff`)
 - `CLAUDE_COMPACTION_PYTHON` — python interpreter (default `python3`)
 - `CLAUDE_COMPACTION_BRIEF_DIR` — where briefs live (default `~/.claude/compaction`)
 - `CLAUDE_COMPACTION_MAX_BYTES` — `/handon` Read cap (default 25000)

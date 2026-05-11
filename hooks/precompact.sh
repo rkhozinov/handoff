@@ -12,7 +12,7 @@
 #   {"matcher": "auto",   "hooks": [{"type":"command","command":"<this-file>"}]}
 set -euo pipefail
 
-PROJECT_ROOT="${CLAUDE_COMPACTION_ROOT:-$HOME/repos/claude-compaction}"
+PROJECT_ROOT="${CLAUDE_COMPACTION_ROOT:-$HOME/repos/handoff}"
 PYTHON="${CLAUDE_COMPACTION_PYTHON:-python3}"
 
 input=$(cat)

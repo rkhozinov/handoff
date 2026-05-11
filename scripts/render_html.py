@@ -845,7 +845,7 @@ def main() -> int:
 
 <footer>
   <p>tests · real fixtures · zero LLM calls in the trim path.</p>
-  <p><code>~/repos/claude-compaction</code></p>
+  <p><code>~/repos/handoff</code></p>
 </footer>
 {selector_script}
 </body>

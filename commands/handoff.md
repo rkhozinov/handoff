@@ -38,7 +38,7 @@ if [ -z "$SID" ] || [ ! -f "$TRANSCRIPT" ]; then
 fi
 
 BRIEF_PATH=$(
-  cd ~/repos/claude-compaction && PYTHONPATH=. python3 -m compaction.cli \
+  cd ~/repos/handoff && PYTHONPATH=. python3 -m compaction.cli \
     --transcript "$TRANSCRIPT" \
     --session-id "$SID" \
     --cwd "$REAL_CWD"
