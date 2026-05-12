@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -56,11 +55,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'chars4' is the legacy heuristic."
         ),
     )
-    p.add_argument(
-        "--no-auto-extract",
-        action="store_true",
-        help="Skip LLM-powered auto-memory extraction from the brief (HANDOFF_AUTO_EXTRACT=0 also disables)",
-    )
     return p.parse_args(argv)
 
 
@@ -103,20 +97,6 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     brief_path.write_text(brief, encoding="utf-8")
-
-    # Fire-and-forget auto-extraction: spawn `memory admin auto-extract` as a
-    # background process.  Failures (missing key, network, no memory CLI) are
-    # silently swallowed — they must never break /hand:off.
-    if not getattr(args, "no_auto_extract", False) and os.environ.get("HANDOFF_AUTO_EXTRACT", "1") != "0":
-        try:
-            subprocess.Popen(  # noqa: S603
-                ["memory", "admin", "auto-extract", "--brief-file", str(brief_path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        except Exception:  # noqa: BLE001
-            pass  # memory CLI not installed — ignore
 
     print(str(brief_path))
     brief_bytes = len(brief.encode("utf-8"))
