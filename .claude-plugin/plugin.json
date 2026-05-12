@@ -1,0 +1,8 @@
+{
+  "name": "handoff",
+  "description": "Lossless session snapshot + restore for Claude Code. /handoff archives transcript context, /handon restores it after /clear, and PreCompact hooks replace the default lossy summarizer.",
+  "author": {
+    "name": "Ruslan Khozinov",
+    "url": "https://github.com/rkhozinov"
+  }
+}
