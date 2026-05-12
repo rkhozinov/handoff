@@ -1,7 +1,7 @@
 # handoff
 
 Deterministic transcript trimmer + memory archive that replaces Claude Code's
-lossy default `/compact` for long sessions. Slash command: `/handoff`.
+lossy default `/compact` for long sessions. Slash commands: `/hand:off` and `/hand:on`.
 
 ## Why
 
@@ -34,7 +34,7 @@ PreCompact hook (manual + auto)
                       └──▶ ~/.claude/compaction/<session>.md  (trimmed brief)
                                                   ▲
                                                   │
-                                          /handon (explicit)
+                                          /hand:on (explicit)
                                           Read tool → injected into context
 ```
 
@@ -43,13 +43,13 @@ User-facing flow:
 ```
 [long session, ~70% context]
    ↓
-/handoff
+/hand:off
    ↓
 prints brief path + memory doc hash
    ↓
 user runs /clear
    ↓
-user runs /handon → loads brief into the new session
+user runs /hand:on → loads brief into the new session
 ```
 
 ## Install
@@ -65,22 +65,22 @@ cd ~/repos/handoff
 
 ## Usage
 
-Run `/handoff` when the context starts filling. It:
+Run `/hand:off` when the context starts filling. It:
 
 1. Archives the full session as a `memory doc` (recoverable via `memory doc search`)
 2. Writes a deterministic trimmed brief to `~/.claude/compaction/<session_id>.md`
 3. Auto-stores any sub-agent reports as memory entries
 
 Briefs are keyed by `session_id`. Claude Code keeps `session_id` stable across
-`/clear` and `claude -c` resume, so `/handon` deterministically restores the
+`/clear` and `claude -c` resume, so `/hand:on` deterministically restores the
 right brief no matter which worktree or branch you're in. No symlinks, no
 cwd-slug heuristics, no cross-branch ghosting.
 
-Then run `/clear` for a fresh slate, and `/handon` when you want the brief
+Then run `/clear` for a fresh slate, and `/hand:on` when you want the brief
 back. Restoration is always explicit — there is no SessionStart hook that
 auto-injects context.
 
-`/handon` reads the latest brief for the current cwd via the Read tool. It's
+`/hand:on` reads the latest brief for the current cwd via the Read tool. It's
 idempotent (re-runnable) and never consumes the symlink — use it whenever
 you want to re-anchor.
 
@@ -129,7 +129,7 @@ bug — the trimmer dropped user intent.
 - Replace the built-in summarizer prompt — only the API SDK exposes
   `instructions` on the compaction beta header (`compact-2026-01-12`),
   not the CC CLI.
-- Auto-restore on `/clear` or `/resume` — `/handon` is always explicit by
+- Auto-restore on `/clear` or `/resume` — `/hand:on` is always explicit by
   design (avoids ghost-context surprises across unrelated sessions in the
   same cwd).
 
@@ -139,7 +139,7 @@ A `Stop` hook (`hooks/context-warn.sh`) parses the last assistant entry's
 `usage` field after every turn and prints a one-line warning to the
 session when input tokens cross the threshold:
 
-    ⚠️  Context at 78% (157k/200k tokens, threshold 70%). Run /handoff …
+    ⚠️  Context at 78% (157k/200k tokens, threshold 70%). Run /hand:off …
 
 CC has no native "context X% full" event, so this approximates by reading
 the live JSONL transcript. Lightweight (single `jq` pass on the last
@@ -152,7 +152,7 @@ Hook env vars:
 - `HANDOFF_ROOT` — path to this repo (default `~/repos/handoff`)
 - `HANDOFF_PYTHON` — python interpreter (default `python3`)
 - `HANDOFF_BRIEF_DIR` — where briefs live (default `~/.claude/compaction`)
-- `HANDOFF_MAX_BYTES` — `/handon` Read cap (default 25000)
+- `HANDOFF_MAX_BYTES` — `/hand:on` Read cap (default 25000)
 - `HANDOFF_CONTEXT_THRESHOLD` — context-warn fraction (default `0.70`)
 - `HANDOFF_CONTEXT_WINDOW` — model context window override in tokens
   (default 200000; set to 1000000 if running Opus 4.x with the 1M extended window)

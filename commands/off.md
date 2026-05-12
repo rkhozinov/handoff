@@ -48,20 +48,20 @@ echo "  session_id: $SID"
 echo "  brief:      $BRIEF_PATH"
 echo
 echo "Restore with either:"
-echo "  /handon $SID"
-echo "  /handon $BRIEF_PATH"
+echo "  /hand:on $SID"
+echo "  /hand:on $BRIEF_PATH"
 ```
 
 Surface the **session id** to the user prominently — that's the
-safest deterministic key for /handon. Many cwds carry multiple
+safest deterministic key for /hand:on. Many cwds carry multiple
 parallel sessions, so picking the right brief by anything other than
 its session id is guesswork.
 
 Tell the user:
 
-> Run `/clear` to free context, then `/handon <session_id>` when you
+> Run `/clear` to free context, then `/hand:on <session_id>` when you
 > want THIS session's brief restored. The session id was just printed
-> above — copy it. (Bare `/handon` exists but auto-discovery picks the
+> above — copy it. (Bare `/hand:on` exists but auto-discovery picks the
 > newest brief for this cwd, which is non-deterministic when several
 > sessions share the directory.)
 

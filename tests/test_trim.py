@@ -122,7 +122,7 @@ def test_render_assistant_dedup_preserves_distinct_markers():
 def test_render_brief_includes_subagent_findings_inline():
     """Sub-agent reports are spliced into the brief convo as `[Sub-agent
     report: ...]` blocks. Pinned to guarantee 39 KB of research findings
-    don't get lost across /handoff."""
+    don't get lost across /hand:off."""
     entries = [
         _u("research compaction tools"),
         _a(
@@ -243,7 +243,7 @@ def test_render_brief_keeps_user_msgs_verbatim():
 
 def test_render_brief_includes_anti_reread_header():
     """The anti-re-read notice is the load-bearing instruction for
-    /handon-restored sessions. Must always appear."""
+    /hand:on-restored sessions. Must always appear."""
     brief = _brief(_build_entries(), "s", "/c", "h")
     assert "Authoritative record" in brief
     assert "do **not** re-Read" in brief

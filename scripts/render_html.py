@@ -732,7 +732,7 @@ def main() -> int:
     flow = """    [User: long session, ~70% context]
                   │
                   ▼
-                /handoff
+                /hand:off
                   │
                   ▼
     ┌─────────────────────────────────────┐
@@ -748,7 +748,7 @@ def main() -> int:
                                  │
             User runs /clear     │ stdout
                                  │
-                       /handon
+                       /hand:on
                   reads brief into resumed context"""
 
     legend = """
@@ -771,7 +771,7 @@ def main() -> int:
 <body>
 <header>
   <h1>handoff</h1>
-  <div class="tagline">Replacing Claude Code's lossy <code>/compact</code> with deterministic trim + memory archive · <code>/handoff</code></div>
+  <div class="tagline">Replacing Claude Code's lossy <code>/compact</code> with deterministic trim + memory archive · <code>/hand:off</code></div>
 </header>
 
 <div class="container">
@@ -811,8 +811,8 @@ def main() -> int:
 
 <section>
   <h2>Generated brief structure</h2>
-  <p>This is what <code>/handoff</code> writes to <code>~/.claude/compaction/&lt;session_id&gt;.md</code>
-  and what <code>/handon</code> reads back into the next session:</p>
+  <p>This is what <code>/hand:off</code> writes to <code>~/.claude/compaction/&lt;session_id&gt;.md</code>
+  and what <code>/hand:on</code> reads back into the next session:</p>
   {"".join(brief_templates)}
   <div id="brief-active"></div>
 </section>

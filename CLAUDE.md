@@ -5,7 +5,7 @@ Claude sessions in this repo.
 
 ## Architecture (single-brief, post-2026-05)
 
-- One output file per /handoff: `~/.claude/compaction/<session_id>.md`.
+- One output file per /hand:off: `~/.claude/compaction/<session_id>.md`.
 - Header (session, cwd, archive hash) + anti-re-read notice + trimmed
   conversation. **No tier1/tier2 split** — that was ripped on `a377986`
   after empirical review showed the trimmed convo more useful than the
@@ -42,7 +42,7 @@ regression — fix the filter, don't relax the invariant.
   don't hoist `transformers`/`anthropic` to module level.
 - `handoff/__init__.py` — empty marker.
 - `scripts/bench.py`, `scripts/render_html.py` — dev tools, not shipped
-  via `/handoff`.
+  via `/hand:off`.
 
 ## Don't reintroduce
 
@@ -81,14 +81,14 @@ PYTHONPATH=. python3 -m handoff.cli \
 `tests/fixtures/raw/` is gitignored (PII). Fixture-dependent tests skip
 when raw fixtures are absent.
 
-## /handoff and /handon contracts
+## /hand:off and /hand:on contracts
 
-- `/handoff` lives at `commands/handoff.md`. Uses `${CLAUDE_SESSION_ID}`
+- `/hand:off` lives at `commands/off.md`. Uses `${CLAUDE_SESSION_ID}`
   to derive both the session id and the transcript path from one source
   — don't decouple, that bug surfaced on 2026-05-08 (brief content
   belonged to a different session than the filename).
-- `/handon` lives at `commands/handon.md`. Accepts `<session-id>` or a
-  full path. Bare `/handon` walks newest jsonls in the cwd's project dir
+- `/hand:on` lives at `commands/on.md`. Accepts `<session-id>` or a
+  full path. Bare `/hand:on` walks newest jsonls in the cwd's project dir
   and Reads the first matching brief — non-deterministic when the cwd
   has many parallel sessions, so prefer passing the session id.
 

@@ -1,20 +1,20 @@
 ---
-description: Restore a /handoff brief into the conversation. Pass the session id (printed by /handoff) for deterministic restore. Bare /handon falls back to the newest brief in this cwd, which is unreliable when multiple sessions share the directory.
+description: Restore a /hand:off brief into the conversation. Pass the session id (printed by /hand:off) for deterministic restore. Bare /hand:on falls back to the newest brief in this cwd, which is unreliable when multiple sessions share the directory.
 argument-hint: "[session-id|brief-path]"
 ---
 
-Restore a /handoff brief into the conversation.
+Restore a /hand:off brief into the conversation.
 
-**Recommended: pass the session id `/handoff` printed.** That's the
+**Recommended: pass the session id `/hand:off` printed.** That's the
 only deterministic way to pick the right brief when this cwd has
 multiple parallel sessions:
 
 ```
-/handon ff6c4f4a-1a60-4a2c-9b96-abd23445b743
+/hand:on ff6c4f4a-1a60-4a2c-9b96-abd23445b743
 ```
 
 `/clear` creates a **new session id**, so the brief saved by the
-pre-clear `/handoff` lives under the OLD session id. Bare `/handon`
+pre-clear `/hand:off` lives under the OLD session id. Bare `/hand:on`
 auto-discovery walks newest-to-oldest jsonls in this cwd, but if
 several sessions ran handoffs today it picks the most recent one,
 which may not be the session you wanted. Pass the session id to
@@ -22,11 +22,11 @@ remove the guesswork.
 
 Behavior:
 
-* `/handon <session-id>` — Resolve to `~/.claude/compaction/<sid>.md`
+* `/hand:on <session-id>` — Resolve to `~/.claude/compaction/<sid>.md`
   and Read it. **Recommended path.**
-* `/handon <full-path>` — Read the absolute path directly. Useful
+* `/hand:on <full-path>` — Read the absolute path directly. Useful
   when the brief lives outside the default compaction dir.
-* `/handon` (no args) — Auto-discover. Tries `${CLAUDE_SESSION_ID}.md`
+* `/hand:on` (no args) — Auto-discover. Tries `${CLAUDE_SESSION_ID}.md`
   first; if missing (typical after /clear), walks JSONLs in this
   cwd's project dir from newest to oldest and reads the first one
   with a saved brief; falls back to a picker if none match.
@@ -58,7 +58,7 @@ resolve_brief() {
     return 1
   fi
 
-  # 2. Current session id (rare success case — only when /handoff was
+  # 2. Current session id (rare success case — only when /hand:off was
   # run AFTER the most recent /clear).
   CUR="$COMPACTION_DIR/${CLAUDE_SESSION_ID}.md"
   if [ -f "$CUR" ]; then
@@ -119,11 +119,11 @@ Decision tree based on stdout:
   ```
 
   Accept the user's pick (number or session id prefix) and re-run
-  `/handon <path>` for the chosen brief.
+  `/hand:on <path>` for the chosen brief.
 
 After loading, print one line confirming what was restored:
 `Restored: <session_id> from <ts>, <N> decisions`.
 
 This command is idempotent — invoking it twice loads the same brief
-twice. It does not consume or rename any file, so re-run `/handon`
+twice. It does not consume or rename any file, so re-run `/hand:on`
 whenever context resets again.

@@ -21,11 +21,11 @@ for h in precompact.sh context-warn.sh; do
   echo "  hook: $CC_HOME/hooks/$h -> $ROOT/hooks/$h"
 done
 
-# Clean up legacy postcompact-restore symlink (the hook is gone — /handon replaces it).
+# Clean up legacy postcompact-restore symlink (the hook is gone — /hand:on replaces it).
 rm -f "$CC_HOME/hooks/postcompact-restore.sh"
 
 # 4. Symlink slash commands
-for c in handoff.md handon.md; do
+for c in off.md on.md; do
   ln -sf "$ROOT/commands/$c" "$CC_HOME/commands/$c"
   echo "  command: $CC_HOME/commands/$c -> $ROOT/commands/$c"
 done
@@ -60,7 +60,7 @@ for matcher in ("manual", "auto"):
         })
 
 # Strip any legacy SessionStart entries that pointed at the removed
-# postcompact-restore.sh hook. /handon is now the explicit restore path.
+# postcompact-restore.sh hook. /hand:on is now the explicit restore path.
 ss = hooks.get("SessionStart")
 if isinstance(ss, list):
     cleaned = [
@@ -97,4 +97,4 @@ echo "Installed. Test:"
 echo "  python3 -m pytest $ROOT/tests/"
 echo "  PYTHONPATH=$ROOT python3 $ROOT/scripts/bench.py"
 echo
-echo "Use /handoff before running /clear."
+echo "Use /hand:off before running /clear."

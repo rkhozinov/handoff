@@ -51,7 +51,7 @@ def test_is_real_user_only_tool_result_synthetic():
 
 
 def test_is_real_user_isMeta_drops_slash_command_body():
-    e = _user_str("body of /handoff command from commands/handoff.md")
+    e = _user_str("body of /hand:off command from commands/off.md")
     e["isMeta"] = True
     assert not extract.is_real_user(e)
 

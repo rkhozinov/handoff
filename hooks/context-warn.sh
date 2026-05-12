@@ -6,7 +6,7 @@
 #
 # When fired, this prints a one-line warning to stdout, which CC surfaces
 # back to the user as a stop-hook notification — they can then choose to
-# run /handoff before context overflows.
+# run /hand:off before context overflows.
 #
 # Wire into ~/.claude/settings.json under "hooks.Stop":
 #   {"matcher": "", "hooks": [{"type":"command","command":"<this-file>"}]}
@@ -55,6 +55,6 @@ ratio_pct=$(awk -v r="$ratio" 'BEGIN { printf "%.0f", r * 100 }')
 
 over=$(awk -v r="$ratio" -v t="$THRESHOLD" 'BEGIN { print (r >= t) ? 1 : 0 }')
 if [ "$over" = "1" ]; then
-  printf "⚠️  Context at %s%% (%s/%s tokens, threshold %s%%). Run /handoff then /clear before context overflows.\n" \
+  printf "⚠️  Context at %s%% (%s/%s tokens, threshold %s%%). Run /hand:off then /clear before context overflows.\n" \
     "$ratio_pct" "$tokens" "$window" "$threshold_pct"
 fi
