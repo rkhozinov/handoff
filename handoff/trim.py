@@ -274,7 +274,7 @@ def _render_brief(
     if archive_hash:
         out.append(
             f"**Archive:** memory doc `{archive_hash}` "
-            f"(full raw via `memory doc get {archive_hash}`)"
+            f"(trimmed transcript via `memory doc get {archive_hash}`)"
         )
     out.append("")
     out.append(_ANTI_REREAD_NOTICE)
