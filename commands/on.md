@@ -1,5 +1,5 @@
 ---
-description: Restore a /hand:off brief into the conversation. Pass the session id (printed by /hand:off) for deterministic restore. Bare /hand:on falls back to the newest brief in this cwd, which is unreliable when multiple sessions share the directory.
+description: Restore a /hand:off brief into the conversation. Pass the session id (printed by /hand:off) for deterministic restore. Bare /hand:on only matches the CURRENT session id; otherwise reports BRIEF_MISSING and shows a picker (no silent fallback).
 argument-hint: "[session-id|brief-path]"
 ---
 
@@ -15,10 +15,10 @@ multiple parallel sessions:
 
 `/clear` creates a **new session id**, so the brief saved by the
 pre-clear `/hand:off` lives under the OLD session id. Bare `/hand:on`
-auto-discovery walks newest-to-oldest jsonls in this cwd, but if
-several sessions ran handoffs today it picks the most recent one,
-which may not be the session you wanted. Pass the session id to
-remove the guesswork.
+will NOT silently auto-pick a stale brief from another session — it
+only loads a brief keyed to the CURRENT session id. Otherwise it
+reports BRIEF_MISSING and shows a picker. Pass the session id
+explicitly to restore across `/clear`.
 
 Behavior:
 
@@ -26,11 +26,9 @@ Behavior:
   and Read it. **Recommended path.**
 * `/hand:on <full-path>` — Read the absolute path directly. Useful
   when the brief lives outside the default compaction dir.
-* `/hand:on` (no args) — Auto-discover. Tries `${CLAUDE_SESSION_ID}.md`
-  first; if missing (typical after /clear), walks JSONLs in this
-  cwd's project dir from newest to oldest and reads the first one
-  with a saved brief; falls back to a picker if none match.
-  **Non-deterministic when multiple sessions share the cwd.**
+* `/hand:on` (no args) — Try `${CLAUDE_SESSION_ID}.md` only. If
+  missing (typical after /clear), report BRIEF_MISSING and show the
+  picker. **No silent fallback to other sessions' briefs.**
 
 ## Resolution
 
@@ -58,23 +56,14 @@ resolve_brief() {
     return 1
   fi
 
-  # 2. Current session id (rare success case — only when /hand:off was
-  # run AFTER the most recent /clear).
+  # 2. Current session id only (rare success — only when /hand:off was
+  # run AFTER the most recent /clear). No silent fallback to other
+  # sessions' briefs — that produced wrong-brief footguns. If missing,
+  # fall through to BRIEF_MISSING + picker so the user picks.
   CUR="$COMPACTION_DIR/${CLAUDE_SESSION_ID}.md"
   if [ -f "$CUR" ]; then
     printf '%s' "$CUR"; return 0
   fi
-
-  # 3. Walk this cwd's project dir from newest to oldest, return the
-  # first session that has a saved brief. This recovers the pre-clear
-  # session automatically.
-  REAL_CWD=$(pwd -P)
-  ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
-  PROJECT_DIR="$HOME/.claude/projects/$ENC"
-  for jl in $(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null); do
-    SID=$(basename "$jl" .jsonl)
-    [ -f "$COMPACTION_DIR/$SID.md" ] && { printf '%s' "$COMPACTION_DIR/$SID.md"; return 0; }
-  done
   return 1
 }
 

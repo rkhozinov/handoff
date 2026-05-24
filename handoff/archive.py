@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +29,6 @@ def archive_full_session(
     transcript_path: str,
     session_id: str,
     cwd: str,
-    timeout: int = 30,
     max_chars: int = 200_000,
 ) -> str | None:
     """Trim transcript → store as memory doc → write scanner marker.
@@ -54,40 +52,24 @@ def archive_full_session(
 
     title = f"Session {sid_short} {project} {date}"
     summary = body[:500] + ("…" if len(body) > 500 else "")
-    tags = f"source:auto,session-archive,project:{project}"
-    metadata = json.dumps({"session_id": sid_short, "source_jsonl": transcript_path})
+    tags = ["source:auto", "session-archive", f"project:{project}"]
+    metadata = {"session_id": sid_short, "source_jsonl": transcript_path}
 
     try:
-        proc = subprocess.run(
-            [
-                "memory", "doc", "store",
-                "--title", title,
-                "--summary", summary,
-                "--body-file", "-",
-                "--type", "session-archive",
-                "--tags", tags,
-                "--metadata", metadata,
-            ],
-            input=body,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+        from memory.core import MemoryStore
+        result = MemoryStore().store_doc(
+            title=title,
+            body=body,
+            summary=summary,
+            doc_type="session-archive",
+            tags=tags,
+            metadata=metadata,
         )
-    except FileNotFoundError:
-        sys.stderr.write("[archive] `memory` CLI not on PATH; skipping archive\n")
+    except ImportError:
+        sys.stderr.write("[archive] `memory` SDK not installed; skipping archive\n")
         return None
-    except subprocess.TimeoutExpired:
-        sys.stderr.write(f"[archive] memory doc store timed out after {timeout}s\n")
-        return None
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write(f"[archive] memory doc store failed: {e.stderr or e}\n")
-        return None
-
-    try:
-        result = json.loads(proc.stdout.strip())
-    except json.JSONDecodeError:
-        sys.stderr.write(f"[archive] unparseable memory doc output: {proc.stdout!r}\n")
+    except Exception as e:
+        sys.stderr.write(f"[archive] memory doc store failed: {e}\n")
         return None
 
     content_hash = result.get("content_hash")

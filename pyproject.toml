@@ -4,10 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "handoff"
-version = "0.1.0"
+version = "1.1.0"
 description = "Deterministic transcript trimmer + memory archive replacing Claude Code's lossy default /compact"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "memory @ file:///Users/rkhozinov/repos/memory",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -24,6 +26,9 @@ api = [
 
 [project.scripts]
 handoff = "handoff.cli:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["handoff"]
