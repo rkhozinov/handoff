@@ -16,6 +16,12 @@ from pathlib import Path
 
 from handoff.archive import archive_full_session
 from handoff.extract import extract_agent_reports, load_jsonl
+from handoff.lifecycle import (
+    detect_status,
+    read_existing_brief,
+    render_frontmatter,
+    resolve_frontmatter,
+)
 from handoff.recall import project_tag_from_cwd, store_agent_reports
 from handoff.tokenizer import VALID_MODES, count_tokens
 from handoff.trim import render_brief
@@ -78,11 +84,22 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     brief_path = out_dir / f"{args.session_id}.md"
 
+    detected_status, detected_signal = detect_status(entries)
+    fm = resolve_frontmatter(
+        session_id=args.session_id,
+        cwd=args.cwd,
+        detected_status=detected_status,
+        detected_signal=detected_signal,
+        archive_hash=archive_hash,
+        existing=read_existing_brief(brief_path),
+    )
+
     brief = render_brief(
         entries,
         session_id=args.session_id,
         cwd=args.cwd,
         archive_hash=archive_hash,
+        frontmatter=render_frontmatter(fm),
     )
 
     # Auto-store sub-agent reports to memory so they survive /clear and become
@@ -104,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.write(
         f"brief={brief_bytes}B (~{brief_tok} tok)  "
         f"archive={archive_hash[:12] if archive_hash else 'none'}  "
-        f"agent_reports={agent_stored}/{agent_count}\n"
+        f"agent_reports={agent_stored}/{agent_count}  "
+        f"status={fm['status']}({fm['completion_signal']})\n"
     )
     return 0
 

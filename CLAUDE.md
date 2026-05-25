@@ -91,6 +91,69 @@ when raw fixtures are absent.
   full path. Bare `/hand:on` walks newest jsonls in the cwd's project dir
   and Reads the first matching brief — non-deterministic when the cwd
   has many parallel sessions, so prefer passing the session id.
+- `/hand:done <sid> [--reopen]` lives at `commands/done.md`. Manual
+  status flip — sets `completion_signal: manual`, which is sticky: a
+  later `/hand:off` on the same sid will NOT auto-revive it.
+- `/hand:list [--all] [--any-cwd]` lives at `commands/list.md`. Reads
+  frontmatter, groups by status, defaults to current cwd + hides done.
+
+## Session lifecycle (frontmatter)
+
+Every brief carries a YAML frontmatter block written by `render_brief`:
+
+```yaml
+---
+status: in_progress       # pending | in_progress | done
+session_id: <sid>
+cwd: <abs path>
+created: <iso8601>
+last_resumed: <iso8601 or null>
+completion_signal: auto-todowrite | auto-user-msg | auto-open-q | auto-default | manual | backfill-*
+archive_hash: <memory doc hash>
+---
+```
+
+Detector lives in `handoff/lifecycle.py:detect_status`. Precedence
+(first match wins):
+
+1. `auto-todowrite` — last TodoWrite call: all entries completed → `done`
+2. `auto-user-msg`  — any of last 3 user msgs match completion regex → `done`
+3. `auto-open-q`    — final user msg looks like a question → `pending`
+4. `auto-default`   — fallback → `in_progress`
+
+**Conservative bias:** uncertainty → `in_progress`, NEVER `done`.
+False-`done` hides briefs from `/hand:on` (bad); false-`in_progress`
+just clutters the picker (mild). Don't loosen the regex without strong
+evidence.
+
+`/hand:off` re-runs are idempotent: `created` and `last_resumed` are
+preserved from the existing brief; `status` is re-detected unless the
+current value is manual-`done` (then user wins).
+
+Migration: `scripts/backfill_status.py` handles briefs without
+frontmatter. It only reads the rendered brief body (no JSONL), so the
+TodoWrite signal isn't available; backfill is conservative.
+
+## Auto-stale sweep
+
+`scripts/sweep_stale.py` flips `pending`/`in_progress` → `done` (signal
+`auto-stale`) when the most-recent activity (`last_resumed` if set, else
+`created`) is older than `--days` (default `STALE_DAYS_DEFAULT = 14`).
+Manual statuses are never touched.
+
+```bash
+PYTHONPATH=. python3 scripts/sweep_stale.py              # dry-run
+PYTHONPATH=. python3 scripts/sweep_stale.py --apply
+PYTHONPATH=. python3 scripts/sweep_stale.py --days 30 --apply
+```
+
+Cron-able for hands-off hygiene:
+```
+0 6 * * *  cd ~/repos/handoff && PYTHONPATH=. python3 scripts/sweep_stale.py --apply
+```
+
+Reversible: `/hand:done <sid> --reopen` revives a brief with a manual
+signal, which is sticky — auto-stale won't re-close it.
 
 ## Known follow-ups (not blocking)
 

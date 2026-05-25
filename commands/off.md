@@ -43,13 +43,25 @@ BRIEF_PATH=$(
     --session-id "$SID" \
     --cwd "$REAL_CWD"
 )
+STATUS=$(awk '/^---$/{c++;next} c==1 && /^status:/{print $2; exit}' "$BRIEF_PATH")
+SIGNAL=$(awk '/^---$/{c++;next} c==1 && /^completion_signal:/{print $2; exit}' "$BRIEF_PATH")
 echo "HANDOFF_OK"
 echo "  session_id: $SID"
 echo "  brief:      $BRIEF_PATH"
+echo "  status:     $STATUS ($SIGNAL)"
 echo
-echo "Restore with either:"
-echo "  /hand:on $SID"
-echo "  /hand:on $BRIEF_PATH"
+case "$STATUS" in
+  done)
+    echo "Detector marked this session DONE — it's hidden from the"
+    echo "/hand:on picker. To resume anyway: /hand:on $SID"
+    echo "To revive permanently: /hand:done $SID --reopen"
+    ;;
+  *)
+    echo "Restore with either:"
+    echo "  /hand:on $SID"
+    echo "  /hand:on $BRIEF_PATH"
+    ;;
+esac
 ```
 
 Surface the **session id** to the user prominently — that's the

@@ -358,9 +358,19 @@ def render_brief(
     session_id: str,
     cwd: str,
     archive_hash: str | None,
+    frontmatter: str | None = None,
 ) -> str:
-    """Render the session brief: anti-re-read header + trimmed conversation."""
+    """Render the session brief: optional YAML frontmatter + anti-re-read
+    header + trimmed conversation.
+
+    `frontmatter` is passed through verbatim if given (already serialised by
+    the caller). Kept optional so existing tests that don't care about the
+    lifecycle layer still pass.
+    """
     convo = build_convo(entries)
     iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    return _render_brief(iso, session_id, cwd, archive_hash, convo)
+    body = _render_brief(iso, session_id, cwd, archive_hash, convo)
+    if frontmatter:
+        return frontmatter + body
+    return body
 
