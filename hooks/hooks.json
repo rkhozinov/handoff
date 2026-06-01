@@ -1,5 +1,5 @@
 {
-  "description": "Context warning on Stop + transcript-aware PreCompact summarizer override.",
+  "description": "Context warning on Stop.",
   "hooks": {
     "Stop": [
       {
@@ -9,28 +9,6 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/context-warn.sh",
             "timeout": 3000
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "manual",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/precompact.sh",
-            "timeout": 30000
-          }
-        ]
-      },
-      {
-        "matcher": "auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/precompact.sh",
-            "timeout": 30000
           }
         ]
       }

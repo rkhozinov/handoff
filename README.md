@@ -27,7 +27,7 @@ dropped is recoverable later via `memory doc search`.
 ## Architecture
 
 ```
-PreCompact hook (manual + auto)
+/hand:off (explicit)
         │
         ▼
   trim_and_archive  ──┬──▶ memory doc store      (full session, recoverable)

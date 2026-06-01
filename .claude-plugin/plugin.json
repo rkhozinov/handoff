@@ -1,7 +1,7 @@
 {
   "name": "hand",
-  "version": "1.1.0",
-  "description": "Lossless session snapshot + restore for Claude Code. /hand:off archives transcript context, /hand:on restores it after /clear, and PreCompact hooks replace the default lossy summarizer.",
+  "version": "1.2.0",
+  "description": "Lossless session snapshot + restore for Claude Code. /hand:off archives transcript context and writes a deterministic trimmed brief; /hand:on restores it after /clear. Explicit, no auto-compaction hooks.",
   "author": {
     "name": "Ruslan Khozinov",
     "url": "https://github.com/rkhozinov"

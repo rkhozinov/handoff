@@ -10,19 +10,21 @@ CC_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 echo "Installing handoff from $ROOT into $CC_HOME"
 
 # 1. Make scripts executable
-chmod +x "$ROOT/hooks/precompact.sh" "$ROOT/hooks/context-warn.sh"
+chmod +x "$ROOT/hooks/context-warn.sh"
 
 # 2. Ensure target dirs exist
 mkdir -p "$CC_HOME/hooks" "$CC_HOME/commands" "$CC_HOME/compaction"
 
 # 3. Symlink hooks (force-replace if a stale symlink exists)
-for h in precompact.sh context-warn.sh; do
+for h in context-warn.sh; do
   ln -sf "$ROOT/hooks/$h" "$CC_HOME/hooks/$h"
   echo "  hook: $CC_HOME/hooks/$h -> $ROOT/hooks/$h"
 done
 
-# Clean up legacy postcompact-restore symlink (the hook is gone — /hand:on replaces it).
-rm -f "$CC_HOME/hooks/postcompact-restore.sh"
+# Clean up legacy symlinks for hooks that no longer exist:
+#   postcompact-restore.sh — replaced by explicit /hand:on
+#   precompact.sh — auto-compaction trigger removed; trimming is now /hand:off-only
+rm -f "$CC_HOME/hooks/postcompact-restore.sh" "$CC_HOME/hooks/precompact.sh"
 
 # 4. Symlink slash commands
 for c in off.md on.md; do
@@ -36,9 +38,9 @@ if [ ! -f "$SETTINGS" ]; then
   echo "{}" > "$SETTINGS"
 fi
 
-PATCHED=$(python3 - "$SETTINGS" "$CC_HOME/hooks/precompact.sh" "$CC_HOME/hooks/context-warn.sh" <<'PY'
+PATCHED=$(python3 - "$SETTINGS" "$CC_HOME/hooks/context-warn.sh" <<'PY'
 import json, sys
-path, precompact_cmd, context_cmd = sys.argv[1], sys.argv[2], sys.argv[3]
+path, context_cmd = sys.argv[1], sys.argv[2]
 with open(path) as f:
     data = json.load(f)
 
@@ -50,14 +52,22 @@ def has(entry_list, command):
         for entry in entry_list
     )
 
-# PreCompact: both manual and auto matchers
-pre = hooks.setdefault("PreCompact", [])
-for matcher in ("manual", "auto"):
-    if not any(e.get("matcher") == matcher and has([e], precompact_cmd) for e in pre):
-        pre.append({
-            "matcher": matcher,
-            "hooks": [{"type": "command", "command": precompact_cmd, "timeout": 30000}],
-        })
+# Strip any legacy PreCompact entries that pointed at the removed
+# precompact.sh hook. Auto-compaction trimming is gone — /hand:off is the
+# only path that runs the trimmer now.
+pre = hooks.get("PreCompact")
+if isinstance(pre, list):
+    cleaned = [
+        e for e in pre
+        if not any(
+            "precompact.sh" in (h.get("command") or "")
+            for h in e.get("hooks", [])
+        )
+    ]
+    if cleaned:
+        hooks["PreCompact"] = cleaned
+    else:
+        hooks.pop("PreCompact", None)
 
 # Strip any legacy SessionStart entries that pointed at the removed
 # postcompact-restore.sh hook. /hand:on is now the explicit restore path.
