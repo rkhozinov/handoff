@@ -87,6 +87,53 @@ you want to re-anchor.
 If the trimmer dropped something you actually needed, recall the full archive:
 `memory doc get <hash>`.
 
+## Session lifecycle, recap, and the global log
+
+Every brief starts with YAML frontmatter:
+
+```yaml
+---
+status: in_progress       # pending | in_progress | done (auto-detected)
+title: session-recap-automation   # CC's own ai-title from the transcript
+session_id: <sid>
+cwd: <abs path>
+created: <iso8601>
+last_resumed: <iso8601 or null>
+completion_signal: auto-todowrite | auto-user-msg | auto-open-q | auto-default | manual | auto-stale
+archive_hash: <memory doc hash>
+recap: Goal: cut portal latency. LCP 3054→2202ms shipped. Next: merge PR #2511.
+recap_source: llm         # llm (composed by /hand:off) | extracted (fallback)
+---
+```
+
+- **status** is detected from the transcript (TodoWrite state, completion
+  language in the last user messages, open questions). Conservative bias:
+  uncertain → `in_progress`, never `done`. `/hand:done <sid>` flips it
+  manually (sticky); `scripts/sweep_stale.py` auto-closes briefs idle
+  longer than 14 days.
+- **recap** is the one LLM-composed field: `/hand:off` writes a 1–2
+  sentence `Goal → current → next` line and passes it via `--recap`.
+  Direct CLI runs fall back to deterministic extraction (first signal
+  user message + first open todo).
+- **title** is CC's own generated session title, read from the transcript.
+
+Every `/hand:off` also upserts one entry per session into the global
+chronological log `~/.claude/compaction/sessions.log.md`:
+
+```
+## 2026-06-04 session-recap-automation [pending]
+Goal: auto-store session recap + global log on /hand:off. … Next: commit.
+restore: /hand:on 952e11c2-7476-4cb5-9d5c-8a59d4d834bb (~/repos/handoff)
+```
+
+One file answers "what was I doing across all projects, and how do I get
+back into it" — no more hand-copying HANDOFF_OK output into scratch files.
+Re-running `/hand:off` replaces the session's entry in place.
+
+`/hand:list` shows briefs grouped by status (current cwd by default,
+`--any-cwd` to widen, `--all` to include done), using the recap as the
+per-row goal hint.
+
 ## Stats (real fixtures)
 
 ```
