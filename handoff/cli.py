@@ -15,14 +15,16 @@ import sys
 from pathlib import Path
 
 from handoff.archive import archive_full_session
-from handoff.extract import extract_agent_reports, load_jsonl
+from handoff.extract import extract_agent_reports, extract_title, load_jsonl
 from handoff.lifecycle import (
     detect_status,
+    extract_recap,
     read_existing_brief,
     render_frontmatter,
     resolve_frontmatter,
 )
 from handoff.recall import project_tag_from_cwd, store_agent_reports
+from handoff.sessionlog import update_session_log
 from handoff.tokenizer import VALID_MODES, count_tokens
 from handoff.trim import render_brief
 
@@ -48,6 +50,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-agent-store",
         action="store_true",
         help="Skip auto-storing sub-agent reports to memory (default: store)",
+    )
+    p.add_argument(
+        "--recap",
+        default=None,
+        help=(
+            "One-line session recap (LLM-composed by /hand:off). When absent, "
+            "a deterministic extraction fallback is used."
+        ),
+    )
+    p.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Skip the global sessions.log.md update (testing only)",
     )
     p.add_argument(
         "--token-mode",
@@ -92,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
         detected_signal=detected_signal,
         archive_hash=archive_hash,
         existing=read_existing_brief(brief_path),
+        recap=args.recap,
+        extracted_recap=extract_recap(entries),
+        title=extract_title(entries),
     )
 
     brief = render_brief(
@@ -115,6 +133,16 @@ def main(argv: list[str] | None = None) -> int:
 
     brief_path.write_text(brief, encoding="utf-8")
 
+    if not args.no_log:
+        update_session_log(
+            session_id=args.session_id,
+            cwd=args.cwd,
+            status=fm["status"],
+            recap=fm["recap"],
+            created=fm["created"],
+            title=fm["title"],
+        )
+
     print(str(brief_path))
     brief_bytes = len(brief.encode("utf-8"))
     brief_tok = count_tokens(brief, mode=args.token_mode)
@@ -122,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         f"brief={brief_bytes}B (~{brief_tok} tok)  "
         f"archive={archive_hash[:12] if archive_hash else 'none'}  "
         f"agent_reports={agent_stored}/{agent_count}  "
-        f"status={fm['status']}({fm['completion_signal']})\n"
+        f"status={fm['status']}({fm['completion_signal']})  "
+        f"recap={fm['recap_source'] or 'none'}\n"
     )
     return 0
 

@@ -75,7 +75,7 @@ End-to-end smoke:
 PYTHONPATH=. python3 -m handoff.cli \
   --transcript tests/fixtures/raw/small.jsonl \
   --session-id smoke --cwd /tmp \
-  --no-archive --out-dir /tmp/smoke
+  --no-archive --no-log --out-dir /tmp/smoke
 ```
 
 `tests/fixtures/raw/` is gitignored (PII). Fixture-dependent tests skip
@@ -104,12 +104,15 @@ Every brief carries a YAML frontmatter block written by `render_brief`:
 ```yaml
 ---
 status: in_progress       # pending | in_progress | done
+title: <CC ai-title from transcript, or null>
 session_id: <sid>
 cwd: <abs path>
 created: <iso8601>
 last_resumed: <iso8601 or null>
 completion_signal: auto-todowrite | auto-user-msg | auto-open-q | auto-default | manual | backfill-*
 archive_hash: <memory doc hash>
+recap: <one-line session summary or null>
+recap_source: llm | extracted | null
 ---
 ```
 
@@ -129,6 +132,32 @@ evidence.
 `/hand:off` re-runs are idempotent: `created` and `last_resumed` are
 preserved from the existing brief; `status` is re-detected unless the
 current value is manual-`done` (then user wins).
+
+## Recap + global session log
+
+- `recap` is the ONE non-deterministic field: `/hand:off` (off.md)
+  instructs session Claude to compose a 1–2 sentence
+  `Goal → current → next` line and passes it via `--recap`
+  (`recap_source: llm`). Without `--recap`, the CLI falls back to
+  `lifecycle.extract_recap` — first signal user msg + first open todo
+  (`recap_source: extracted`). Sanitized by `sanitize_recap`
+  (single line, `RECAP_MAX_CHARS = 300`).
+- Precedence in `resolve_frontmatter`: `--recap` > existing llm recap >
+  fresh extracted > existing extracted. An llm recap is NEVER
+  downgraded to extracted on re-run.
+- `title` comes from `extract.extract_title` — the LAST `ai-title`
+  entry in the transcript (CC's own session title, deterministic).
+  Heading of the log entry; cwd alone is useless when most sessions
+  share one repo dir.
+- `handoff/sessionlog.py:update_session_log` upserts one entry per
+  session (keyed on the full sid in the `restore:` line) into
+  `~/.claude/compaction/sessions.log.md` — the global chronological
+  log that replaces hand-copying HANDOFF_OK output. Entry shape:
+  `## <date> <title|cwd> [<status>]` + recap + `restore: /hand:on
+  <sid> (<cwd>)`. `--no-log` skips it (testing). Re-runs replace the
+  entry in place, never duplicate.
+- `/hand:list` prefers `recap:` frontmatter over the first `U:` line
+  as the goal hint.
 
 Migration: `scripts/backfill_status.py` handles briefs without
 frontmatter. It only reads the rendered brief body (no JSONL), so the

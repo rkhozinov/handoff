@@ -20,13 +20,30 @@ What it preserves verbatim:
 
 ## Steps
 
-Run this single bash block. The session id comes straight from
+### 1. Compose the recap
+
+Before running the bash block, write a 1–2 sentence recap of THIS session
+from your own context. Shape:
+
+> Goal: <what the session set out to do>. <current state — what shipped /
+> where it stands>. Next: <single next step>.
+
+Keep it under 300 chars, one line, concrete (PR numbers, ticket ids, env
+names). Do NOT use single quotes (`'`) in the text — it's embedded in a
+single-quoted shell var. This recap lands in the brief frontmatter and the
+global `~/.claude/compaction/sessions.log.md`.
+
+### 2. Run the handoff
+
+Run this single bash block, substituting your recap into `RECAP`. The
+session id comes straight from
 `${CLAUDE_SESSION_ID}` — Claude Code's own substitution, so there's
 no ambiguity about which session is being archived. The transcript
 path is derived from the same session id + cwd, matching CC's
 project-dir encoding (`[^A-Za-z0-9-]` → `-`).
 
 ```bash
+RECAP='<your 1-2 sentence recap here>'
 SID="${CLAUDE_SESSION_ID}"
 REAL_CWD=$(pwd -P)
 ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
@@ -41,14 +58,17 @@ BRIEF_PATH=$(
   cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.cli \
     --transcript "$TRANSCRIPT" \
     --session-id "$SID" \
-    --cwd "$REAL_CWD"
+    --cwd "$REAL_CWD" \
+    --recap "$RECAP"
 )
 STATUS=$(awk '/^---$/{c++;next} c==1 && /^status:/{print $2; exit}' "$BRIEF_PATH")
 SIGNAL=$(awk '/^---$/{c++;next} c==1 && /^completion_signal:/{print $2; exit}' "$BRIEF_PATH")
 echo "HANDOFF_OK"
+echo "  recap:      $RECAP"
 echo "  session_id: $SID"
 echo "  brief:      $BRIEF_PATH"
 echo "  status:     $STATUS ($SIGNAL)"
+echo "  log:        ~/.claude/compaction/sessions.log.md (entry upserted)"
 echo
 case "$STATUS" in
   done)

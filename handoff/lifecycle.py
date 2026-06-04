@@ -25,7 +25,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from handoff.extract import assistant_blocks, is_real_user, user_text
+from handoff.extract import (
+    assistant_blocks,
+    is_injected_user_msg,
+    is_noise_user_msg,
+    is_real_user,
+    user_text,
+)
 
 Status = Literal["pending", "in_progress", "done"]
 Signal = Literal[
@@ -39,6 +45,16 @@ Signal = Literal[
 ]
 
 STALE_DAYS_DEFAULT = 14
+
+# Hard cap on the recap frontmatter value. Recaps are one-liners; anything
+# longer belongs in the brief body.
+RECAP_MAX_CHARS = 300
+
+# A completion keyword only counts when the message is terse ("thanks",
+# "merged, ship it"). Long messages embed keywords as task CONTENT — live
+# false-done (2026-06-04): opening request "i done it manually copying…"
+# (280 chars) matched `done`. Tightening = conservative-bias-safe.
+DONE_MSG_MAX_CHARS = 100
 
 _DONE_RE = re.compile(
     r"\b("
@@ -68,10 +84,10 @@ _QUESTION_PREFIX_RE = re.compile(
 )
 
 
-def _last_todowrite_state(entries: list[dict]) -> list[str] | None:
-    """Return the `status` field of every todo in the LAST TodoWrite call,
-    or None if no TodoWrite call appeared in the transcript."""
-    last: list[str] | None = None
+def _last_todowrite_todos(entries: list[dict]) -> list[dict] | None:
+    """Return the todo dicts of the LAST TodoWrite call, or None if no
+    TodoWrite call appeared in the transcript."""
+    last: list[dict] | None = None
     for e in entries:
         if e.get("type") != "assistant":
             continue
@@ -84,23 +100,33 @@ def _last_todowrite_state(entries: list[dict]) -> list[str] | None:
             todos = inp.get("todos")
             if not isinstance(todos, list):
                 continue
-            last = [
-                str(t.get("status") or "")
-                for t in todos
-                if isinstance(t, dict)
-            ]
+            last = [t for t in todos if isinstance(t, dict)]
     return last
+
+
+def _last_todowrite_state(entries: list[dict]) -> list[str] | None:
+    """Return the `status` field of every todo in the LAST TodoWrite call,
+    or None if no TodoWrite call appeared in the transcript."""
+    todos = _last_todowrite_todos(entries)
+    if todos is None:
+        return None
+    return [str(t.get("status") or "") for t in todos]
 
 
 def _last_real_user_msgs(entries: list[dict], n: int) -> list[str]:
     """Walk entries in reverse; return up to N most-recent real user texts
-    (oldest-first in the returned list)."""
+    (oldest-first in the returned list).
+
+    Skips CC-injected pseudo-user text (slash command bodies etc.) — a
+    /hand:off skill body contains the literal word "done" and would
+    false-`done` every session it runs in. Short acks are KEPT: bare
+    "done" / "thanks" from the user is the detector's primary signal."""
     out: list[str] = []
     for e in reversed(entries):
         if not is_real_user(e):
             continue
         t = user_text(e)
-        if not t:
+        if not t or is_injected_user_msg(t):
             continue
         out.append(t)
         if len(out) >= n:
@@ -121,9 +147,13 @@ def detect_status(entries: list[dict]) -> tuple[Status, Signal]:
         if all(s == "completed" for s in todos):
             return ("done", "auto-todowrite")
 
-    # 2. Last N user messages — explicit completion language.
+    # 2. Last N user messages — explicit completion language. Only terse
+    #    messages count (see DONE_MSG_MAX_CHARS).
     last_msgs = _last_real_user_msgs(entries, n=3)
-    if last_msgs and any(_DONE_RE.search(m) for m in last_msgs):
+    if last_msgs and any(
+        len(m.strip()) <= DONE_MSG_MAX_CHARS and _DONE_RE.search(m)
+        for m in last_msgs
+    ):
         return ("done", "auto-user-msg")
 
     # 3. Final user message looks like an open question.
@@ -136,18 +166,67 @@ def detect_status(entries: list[dict]) -> tuple[Status, Signal]:
     return ("in_progress", "auto-default")
 
 
+def sanitize_recap(text: str | None) -> str | None:
+    """Collapse a recap to a single frontmatter-safe line: whitespace runs
+    (incl. newlines) become single spaces, capped at `RECAP_MAX_CHARS`.
+    Empty / whitespace-only input → None."""
+    if not text:
+        return None
+    flat = re.sub(r"\s+", " ", text).strip()
+    if not flat:
+        return None
+    if len(flat) > RECAP_MAX_CHARS:
+        flat = flat[: RECAP_MAX_CHARS - 1].rstrip() + "…"
+    return flat
+
+
+def extract_recap(entries: list[dict]) -> str | None:
+    """Deterministic recap fallback for direct CLI runs (no `--recap`).
+
+    Shape: `<first real user msg> | next: <first open todo>` — the goal as
+    the user phrased it, plus the next actionable step if a TodoWrite trail
+    exists. Much weaker than the LLM-composed recap, but better than nothing.
+    """
+    goal: str | None = None
+    for e in entries:
+        if not is_real_user(e):
+            continue
+        t = user_text(e)
+        # Full noise filter here (unlike the detector): short acks and
+        # injected command bodies both make useless goals.
+        if t and not is_noise_user_msg(t):
+            goal = t
+            break
+    if goal is None:
+        return None
+
+    todos = _last_todowrite_todos(entries)
+    next_step: str | None = None
+    if todos:
+        for t in todos:
+            if str(t.get("status") or "") != "completed":
+                next_step = str(t.get("content") or "").strip() or None
+                break
+
+    recap = goal if next_step is None else f"{goal} | next: {next_step}"
+    return sanitize_recap(recap)
+
+
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 _FM_KEY_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
 
 # Frontmatter keys, written in this order. Single source of truth.
 FRONTMATTER_KEYS = (
     "status",
+    "title",
     "session_id",
     "cwd",
     "created",
     "last_resumed",
     "completion_signal",
     "archive_hash",
+    "recap",
+    "recap_source",
 )
 
 
@@ -270,6 +349,9 @@ def resolve_frontmatter(
     detected_signal: Signal,
     archive_hash: str | None,
     existing: dict[str, str | None],
+    recap: str | None = None,
+    extracted_recap: str | None = None,
+    title: str | None = None,
 ) -> dict[str, str | None]:
     """Merge detector output with any pre-existing frontmatter.
 
@@ -280,6 +362,12 @@ def resolve_frontmatter(
         the user's decision wins — never auto-revive. Otherwise the
         fresh detection overrides.
       * `session_id`, `cwd`, `archive_hash`: always take the fresh value.
+      * `title`: fresh value (CC's ai-title from the transcript) wins;
+        existing preserved when the transcript carries none.
+      * `recap`: precedence `recap` arg (LLM-composed via `--recap`) >
+        existing LLM recap > `extracted_recap` (deterministic fallback) >
+        existing extracted recap. An LLM recap is never downgraded to an
+        extracted one on re-run.
     """
     out: dict[str, str | None] = {
         "session_id": session_id,
@@ -287,7 +375,25 @@ def resolve_frontmatter(
         "created": existing.get("created") or now_iso(),
         "last_resumed": existing.get("last_resumed"),
         "archive_hash": archive_hash,
+        "title": title or existing.get("title"),
     }
+
+    llm_recap = sanitize_recap(recap)
+    if llm_recap:
+        out["recap"] = llm_recap
+        out["recap_source"] = "llm"
+    elif existing.get("recap") and existing.get("recap_source") == "llm":
+        out["recap"] = existing["recap"]
+        out["recap_source"] = "llm"
+    elif sanitize_recap(extracted_recap):
+        out["recap"] = sanitize_recap(extracted_recap)
+        out["recap_source"] = "extracted"
+    elif existing.get("recap"):
+        out["recap"] = existing["recap"]
+        out["recap_source"] = existing.get("recap_source") or "extracted"
+    else:
+        out["recap"] = None
+        out["recap_source"] = None
 
     if (
         existing.get("status") == "done"

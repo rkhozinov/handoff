@@ -662,3 +662,24 @@ def test_extract_compact_summaries_handles_blocks_content():
     }
     assert extract.extract_compact_summaries([e]) == ["block-form summary"]
 
+
+
+# ---------- extract_title ----------
+
+def test_extract_title_last_wins():
+    entries = [
+        {"type": "ai-title", "aiTitle": "first title"},
+        {"type": "user", "message": {"role": "user", "content": "hi"}},
+        {"type": "ai-title", "aiTitle": "final title"},
+    ]
+    assert extract.extract_title(entries) == "final title"
+
+def test_extract_title_none_when_absent():
+    assert extract.extract_title([_user_str("hello")]) is None
+
+def test_extract_title_skips_empty():
+    entries = [
+        {"type": "ai-title", "aiTitle": "good"},
+        {"type": "ai-title", "aiTitle": "  "},
+    ]
+    assert extract.extract_title(entries) == "good"

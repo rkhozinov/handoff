@@ -60,7 +60,11 @@ for f in $FILES; do
   [ -z "$age" ] && age=$(stat -f '%Sm' -t '%Y-%m-%dT%H:%MZ' "$f" 2>/dev/null \
                          || stat -c '%y' "$f" 2>/dev/null | cut -c1-16)
   sid=$(basename "$f" .md)
-  goal=$(awk '/^U:/{sub(/^U: */,""); print; exit}' "$f")
+  # Prefer the recap frontmatter (LLM or extracted) over the raw first user msg.
+  goal=$(awk '/^---$/{c++;next} c==1 && /^recap:/{sub(/^recap: */,""); print; exit}' "$f")
+  if [ -z "$goal" ] || [ "$goal" = "null" ]; then
+    goal=$(awk '/^U:/{sub(/^U: */,""); print; exit}' "$f")
+  fi
 
   if [ "$ANY_CWD" -eq 0 ] && [ -n "$cwd" ] && [ "$cwd" != "$CUR_CWD" ]; then
     continue

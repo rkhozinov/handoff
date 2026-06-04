@@ -269,15 +269,25 @@ def iter_real_user_msgs(entries: Iterable[dict]) -> list[str]:
     return out
 
 
-def is_noise_user_msg(text: str) -> bool:
-    """Return True for user msgs that are obvious noise and shouldn't bloat
-    the trimmed brief. The full text is still preserved in the memory doc
-    archive — this only filters what makes it into the trimmed brief."""
+def extract_title(entries: Iterable[dict]) -> str | None:
+    """CC's own generated session title — the LAST `ai-title` entry wins
+    (CC re-titles as the session evolves). Deterministic, no LLM call."""
+    title: str | None = None
+    for e in entries:
+        if e.get("type") == "ai-title":
+            t = str(e.get("aiTitle") or "").strip()
+            if t:
+                title = t
+    return title
+
+
+def is_injected_user_msg(text: str) -> bool:
+    """CC-injected pseudo-user text the user never typed: slash command
+    bodies, system-injected wrappers, prior-compaction continuations. These
+    carry words like "done" / "?" that poison the lifecycle detector and
+    the extracted recap, so both filter on this (but NOT on short acks —
+    bare "done" from the user IS the detector's primary signal)."""
     s = text.strip()
-    if not s:
-        return True
-    if SHORT_ACK_RE.match(s):
-        return True
     if COMPACTION_CONTINUATION_RE.match(s):
         return True
     if any(marker in s for marker in SKILL_BODY_MARKERS):
@@ -288,6 +298,18 @@ def is_noise_user_msg(text: str) -> bool:
         # Slash command frontmatter pasted as user input
         return True
     return False
+
+
+def is_noise_user_msg(text: str) -> bool:
+    """Return True for user msgs that are obvious noise and shouldn't bloat
+    the trimmed brief. The full text is still preserved in the memory doc
+    archive — this only filters what makes it into the trimmed brief."""
+    s = text.strip()
+    if not s:
+        return True
+    if SHORT_ACK_RE.match(s):
+        return True
+    return is_injected_user_msg(s)
 
 
 def iter_signal_user_msgs(entries: Iterable[dict]) -> list[str]:
