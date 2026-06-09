@@ -358,9 +358,9 @@ def resolve_frontmatter(
     Rules:
       * `created`: preserve from existing if present, else now.
       * `last_resumed`: preserve as-is (only `/hand:on` flips it).
-      * `status` + `completion_signal`: if existing is a MANUAL `done`,
-        the user's decision wins — never auto-revive. Otherwise the
-        fresh detection overrides.
+      * `status` + `completion_signal`: if existing is a MANUAL `done` or
+        `archived`, the user's decision wins — never auto-revive/un-archive.
+        Otherwise the fresh detection overrides.
       * `session_id`, `cwd`, `archive_hash`: always take the fresh value.
       * `title`: fresh value (CC's ai-title from the transcript) wins;
         existing preserved when the transcript carries none.
@@ -396,10 +396,10 @@ def resolve_frontmatter(
         out["recap_source"] = None
 
     if (
-        existing.get("status") == "done"
-        and existing.get("completion_signal") == "manual"
+        existing.get("completion_signal") == "manual"
+        and existing.get("status") in ("done", "archived")
     ):
-        out["status"] = "done"
+        out["status"] = existing["status"]
         out["completion_signal"] = "manual"
     else:
         out["status"] = detected_status

@@ -31,7 +31,7 @@ from your own context. Shape:
 Keep it under 300 chars, one line, concrete (PR numbers, ticket ids, env
 names). Do NOT use single quotes (`'`) in the text — it's embedded in a
 single-quoted shell var. This recap lands in the brief frontmatter and the
-global `~/.claude/compaction/sessions.log.md`.
+sessions DB (`~/.claude/compaction/sessions.db`).
 
 ### 2. Run the handoff
 
@@ -68,7 +68,7 @@ echo "  recap:      $RECAP"
 echo "  session_id: $SID"
 echo "  brief:      $BRIEF_PATH"
 echo "  status:     $STATUS ($SIGNAL)"
-echo "  log:        ~/.claude/compaction/sessions.log.md (entry upserted)"
+echo "  db:         ~/.claude/compaction/sessions.db (row upserted)"
 echo
 case "$STATUS" in
   done)

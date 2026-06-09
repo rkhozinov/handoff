@@ -24,7 +24,6 @@ from handoff.lifecycle import (
     resolve_frontmatter,
 )
 from handoff.recall import project_tag_from_cwd, store_agent_reports
-from handoff.sessionlog import update_session_log
 from handoff.tokenizer import VALID_MODES, count_tokens
 from handoff.trim import render_brief
 
@@ -60,9 +59,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     p.add_argument(
-        "--no-log",
+        "--no-db",
         action="store_true",
-        help="Skip the global sessions.log.md update (testing only)",
+        help="Skip the sessions.db index upsert (testing only)",
     )
     p.add_argument(
         "--token-mode",
@@ -133,15 +132,19 @@ def main(argv: list[str] | None = None) -> int:
 
     brief_path.write_text(brief, encoding="utf-8")
 
-    if not args.no_log:
-        update_session_log(
-            session_id=args.session_id,
-            cwd=args.cwd,
-            status=fm["status"],
-            recap=fm["recap"],
-            created=fm["created"],
-            title=fm["title"],
-        )
+    if not args.no_db:
+        from handoff import db
+        from handoff.lifecycle import strip_frontmatter
+
+        # brief = frontmatter + body; the DB stores the body only (every
+        # frontmatter field is already a typed column).
+        with db.connect() as conn:
+            db.upsert_session(
+                conn,
+                fm=fm,
+                body=strip_frontmatter(brief),
+                brief_path=str(brief_path),
+            )
 
     print(str(brief_path))
     brief_bytes = len(brief.encode("utf-8"))

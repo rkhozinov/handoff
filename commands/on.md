@@ -93,27 +93,20 @@ Decision tree based on stdout:
   brief with the Read tool. Treat its contents as ground-truth
   context for the resumed work.
 
-  After Read, if `BRIEF_STATUS` is `pending` or `in_progress`, flip
-  it to `in_progress` and stamp `last_resumed`:
+  After Read, update BOTH the brief file frontmatter and the sessions
+  DB row (status → `in_progress`, stamp `last_resumed`) via dbcli. It
+  declines to flip a `done` brief on its own and prints `HANDON_DONE`:
 
   ```bash
-  NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  awk -v ts="$NOW" '
-    BEGIN { in_fm = 0; seen = 0 }
-    /^---$/ {
-      if (!seen) { in_fm = !in_fm; if (!in_fm) seen = 1 }
-      print; next
-    }
-    in_fm && /^status:/       { print "status: in_progress"; next }
-    in_fm && /^last_resumed:/ { print "last_resumed: " ts; next }
-    { print }
-  ' "$BRIEF" > "$BRIEF.tmp" && mv "$BRIEF.tmp" "$BRIEF"
+  SID=$(basename "$BRIEF" .md)
+  cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli on "$SID" \
+    --dir "$(dirname "$BRIEF")"
   ```
 
-  If `BRIEF_STATUS` is `done`, load anyway (user asked explicitly by
-  sid) but do **not** flip — print a warning that the brief was
-  marked done, and that `/hand:done <sid> --reopen` will revive it
-  permanently.
+  If `BRIEF_STATUS` is `done`, load the brief anyway (user asked
+  explicitly by sid) — `dbcli on` will print `HANDON_DONE` and leave it
+  untouched. Warn the user that the brief was marked done and that
+  `/hand:done <sid> --reopen` will revive it permanently.
 
 * `BRIEF_MISSING ...` → No brief found by either explicit path or
   auto-discovery. Show the enriched picker so the user can choose:

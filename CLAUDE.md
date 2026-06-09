@@ -32,7 +32,20 @@ regression — fix the filter, don't relax the invariant.
   used by bench/report stats only).
 - `handoff/trim.py` — `render_brief(entries, sid, cwd, archive_hash)`.
   `build_convo` exposed for the report's audit panel.
-- `handoff/cli.py` — orchestrator: load_jsonl → archive → render → write.
+- `handoff/cli.py` — orchestrator: load_jsonl → archive → render → write
+  → upsert DB row.
+- `handoff/db.py` — SQLite session index (`~/.claude/compaction/sessions.db`,
+  WAL, one row per session: all frontmatter fields + trimmed `body`).
+  `connect`/`upsert_session`/`get_session`/`list_sessions`/`search_sessions`/
+  `set_status`/`set_resumed`/`delete_session`/`rebuild_from_briefs`. Brief
+  `.md` files stay authoritative; DB mirrors them and is rebuildable.
+- `handoff/dbcli.py` — `hand` CLI + the backend the /hand:* command bash
+  blocks call. `done`/`on`/`list`/`show`/`search`/`rm`/`rebuild`/`tui`.
+  Every mutation edits the brief frontmatter file AND the DB row in one
+  process (`do_done`/`do_resume`/`do_delete`) so they never drift.
+- `handoff/tui.py` — Textual 2-pane TUI (optional `[tui]` extra,
+  lazy-imported). Left list pane, right scrollable brief. Reads the DB;
+  mutating keys route through `dbcli.do_*`.
 - `handoff/recall.py` — `project_tag_from_cwd` + `store_agent_reports`.
   That's it. Older `build_query`/`search_memories`/`format_memory_line`
   were ripped (no callers post-tier1).
@@ -75,7 +88,7 @@ End-to-end smoke:
 PYTHONPATH=. python3 -m handoff.cli \
   --transcript tests/fixtures/raw/small.jsonl \
   --session-id smoke --cwd /tmp \
-  --no-archive --no-log --out-dir /tmp/smoke
+  --no-archive --no-db --out-dir /tmp/smoke
 ```
 
 `tests/fixtures/raw/` is gitignored (PII). Fixture-dependent tests skip
@@ -133,7 +146,7 @@ evidence.
 preserved from the existing brief; `status` is re-detected unless the
 current value is manual-`done` (then user wins).
 
-## Recap + global session log
+## Recap + session DB
 
 - `recap` is the ONE non-deterministic field: `/hand:off` (off.md)
   instructs session Claude to compose a 1–2 sentence
@@ -147,21 +160,32 @@ current value is manual-`done` (then user wins).
   downgraded to extracted on re-run.
 - `title` comes from `extract.extract_title` — the LAST `ai-title`
   entry in the transcript (CC's own session title, deterministic).
-  Heading of the log entry; cwd alone is useless when most sessions
-  share one repo dir.
-- `handoff/sessionlog.py:update_session_log` upserts one entry per
-  session (keyed on the full sid in the `restore:` line) into
-  `~/.claude/compaction/sessions.log.md` — the global chronological
-  log that replaces hand-copying HANDOFF_OK output. Entry shape:
-  `## <date> <title|cwd> [<status>]` + recap + `restore: /hand:on
-  <sid> (<cwd>)`. `--no-log` skips it (testing). Re-runs replace the
-  entry in place, never duplicate.
-- `/hand:list` prefers `recap:` frontmatter over the first `U:` line
-  as the goal hint.
+  Shown as the TUI/list heading; cwd alone is useless when most
+  sessions share one repo dir.
+- `cli.py` upserts one row per session into the SQLite index
+  (`handoff/db.py:upsert_session`, keyed on `session_id`): all
+  frontmatter fields + the frontmatter-stripped `body` + `brief_path` +
+  `indexed_at`. `--no-db` skips it (testing). Re-runs `INSERT OR
+  REPLACE`, never duplicate. This **replaced** the old
+  `sessions.log.md` markdown log (`handoff/sessionlog.py`, deleted) —
+  don't reintroduce a markdown log.
+- The DB is a derived mirror: brief `.md` files are authoritative
+  (what `/hand:on` Reads back). `hand rebuild` /
+  `python3 -m handoff.dbcli rebuild` repopulates the DB from the briefs
+  and drops rows with no backing file — the migration + self-heal path.
+- `/hand:list`, `/hand:on`, `/hand:done` all go through
+  `handoff.dbcli`, which edits the brief frontmatter file AND the DB row
+  together so they stay in sync. `/hand:list` prefers `recap:` over the
+  first `U:` line as the goal hint.
+- WAL journal mode — single-machine store; not designed for
+  cross-machine sync (the -wal/-shm sidecars + concurrent writes would
+  corrupt a synced copy). If the DB ever looks wrong, delete it and
+  `rebuild`.
 
 Migration: `scripts/backfill_status.py` handles briefs without
-frontmatter. It only reads the rendered brief body (no JSONL), so the
-TodoWrite signal isn't available; backfill is conservative.
+frontmatter (run it first); then `dbcli rebuild` indexes them. Backfill
+only reads the rendered brief body (no JSONL), so the TodoWrite signal
+isn't available; it's conservative.
 
 ## Auto-stale sweep
 

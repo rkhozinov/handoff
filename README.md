@@ -117,22 +117,31 @@ recap_source: llm         # llm (composed by /hand:off) | extracted (fallback)
   user message + first open todo).
 - **title** is CC's own generated session title, read from the transcript.
 
-Every `/hand:off` also upserts one entry per session into the global
-chronological log `~/.claude/compaction/sessions.log.md`:
+Every `/hand:off` also upserts one row per session into a SQLite index at
+`~/.claude/compaction/sessions.db` — the queryable store of "what was I
+doing across all projects, and how do I get back into it." It holds all
+frontmatter fields plus the trimmed brief body, so the CLI and TUI review
+a session without opening the `.md`. The brief files stay authoritative;
+the DB mirrors them and is rebuildable from them:
 
+```bash
+PYTHONPATH=. python3 -m handoff.dbcli rebuild   # backfill / self-heal from brief files
 ```
-## 2026-06-04 session-recap-automation [pending]
-Goal: auto-store session recap + global log on /hand:off. … Next: commit.
-restore: /hand:on 952e11c2-7476-4cb5-9d5c-8a59d4d834bb (~/repos/handoff)
-```
-
-One file answers "what was I doing across all projects, and how do I get
-back into it" — no more hand-copying HANDOFF_OK output into scratch files.
-Re-running `/hand:off` replaces the session's entry in place.
 
 `/hand:list` shows briefs grouped by status (current cwd by default,
 `--any-cwd` to widen, `--all` to include done), using the recap as the
-per-row goal hint.
+per-row goal hint. Under the hood it queries the DB via
+`handoff.dbcli`, the same backend `/hand:on` and `/hand:done` use to keep
+the brief file frontmatter and the DB row in sync.
+
+### Session TUI
+
+`/hand:tui` (or `hand tui`) launches a 2-pane Textual UI: left pane lists
+handoffs (title, date, status, newest-first), right pane shows the
+selected brief, scrollable. Keys: `j/k` navigate, `a` show/hide done, `d`
+done, `r` reopen, `x` delete (DB row only), `g` refresh, `q` quit. Textual
+is an optional dependency — install it with `pip install -e '.[tui]'`. A
+richer CLI (`hand show`, `hand search`) is also available.
 
 ## Stats (real fixtures)
 

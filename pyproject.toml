@@ -23,9 +23,13 @@ hf = [
 api = [
     "anthropic>=0.40",
 ]
+tui = [
+    "textual>=0.60",
+]
 
 [project.scripts]
 handoff = "handoff.cli:main"
+hand = "handoff.dbcli:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true
