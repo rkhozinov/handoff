@@ -1,7 +1,7 @@
 {
   "name": "hand",
-  "version": "1.3.0",
-  "description": "Lossless session snapshot + restore for Claude Code. /hand:off archives transcript context and writes a deterministic trimmed brief; /hand:on restores it after /clear. Explicit, no auto-compaction hooks.",
+  "version": "1.4.0",
+  "description": "Lossless session snapshot + restore for Claude Code. /hand:off archives transcript context into a deterministic trimmed brief (recap + status frontmatter) and a rebuildable SQLite index; /hand:on restores it after /clear. Browse, search, archive, and rename sessions with the `hand` CLI or a 2-pane Textual TUI. Explicit, no auto-compaction hooks.",
   "author": {
     "name": "Ruslan Khozinov",
     "url": "https://github.com/rkhozinov"
