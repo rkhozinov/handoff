@@ -115,10 +115,13 @@ def count_tokens(text: str, mode: str = "auto") -> int:
     if mode == "api":
         return _count_api(text)
 
-    # mode == "auto": prefer the offline HF tokenizer; fall back to chars4
-    # if transformers (or any of its deps) is not importable. We never auto-
-    # select the API mode — that would mean a surprise network call.
+    # mode == "auto": prefer the offline HF tokenizer; fall back to chars4 on
+    # ANY failure — not just ImportError. transformers can be installed yet
+    # still fail at from_pretrained when the model isn't cached and the host is
+    # offline (OSError/LocalEntryNotFoundError). The token count is a cosmetic
+    # metric, so it must never break the caller. We never auto-select the API
+    # mode — that would mean a surprise network call.
     try:
         return _count_hf(text)
-    except ImportError:
+    except Exception:
         return _count_chars4(text)
