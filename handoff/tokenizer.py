@@ -46,20 +46,41 @@ def _count_chars4(text: str) -> int:
     return len(text.encode("utf-8")) // 4
 
 
-def _count_hf(text: str) -> int:
-    """Offline tokenization via the Xenova/claude-tokenizer HF model.
+def _make_hf_counter():
+    """Build a ``text -> token_count`` callable for Xenova/claude-tokenizer.
 
-    Raises ``ImportError`` if ``transformers`` (or its dependencies) is not
-    installed — callers in ``auto`` mode catch this and fall back to chars4.
+    Prefers ``AutoTokenizer.from_pretrained``. That path breaks under
+    ``HF_HUB_OFFLINE=1`` because this is a tokenizer-only repo with no
+    ``config.json`` — offline, the harmless 404 for config.json becomes a fatal
+    ``LocalEntryNotFoundError``. So we fall back to loading the cached
+    ``tokenizer.json`` directly via the ``tokenizers`` lib, which needs no
+    config and works entirely from cache. Either source raises if nothing is
+    available, and ``auto`` mode falls back to chars4.
     """
     from transformers import AutoTokenizer  # lazy: keeps this an optional dep
 
-    tok = _HF_TOKENIZERS.get(_HF_MODEL)
-    if tok is None:
+    try:
         tok = AutoTokenizer.from_pretrained(_HF_MODEL)
-        _HF_TOKENIZERS[_HF_MODEL] = tok
-    # ``encode`` returns the input ids list; its length is the token count.
-    return len(tok.encode(text, add_special_tokens=False))
+        return lambda text: len(tok.encode(text, add_special_tokens=False))
+    except Exception:
+        # Offline / no config.json: load the cached fast tokenizer file directly.
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
+
+        path = hf_hub_download(_HF_MODEL, "tokenizer.json", local_files_only=True)
+        tk = Tokenizer.from_file(path)
+        return lambda text: len(tk.encode(text, add_special_tokens=False).ids)
+
+
+def _count_hf(text: str) -> int:
+    """Tokenize with Xenova/claude-tokenizer. Caches the counter (built once
+    per process). Raises if neither the online model nor the cached
+    tokenizer.json is available — ``auto`` mode catches that and uses chars4."""
+    counter = _HF_TOKENIZERS.get(_HF_MODEL)
+    if counter is None:
+        counter = _make_hf_counter()
+        _HF_TOKENIZERS[_HF_MODEL] = counter
+    return counter(text)
 
 
 def _count_api(text: str) -> int:
