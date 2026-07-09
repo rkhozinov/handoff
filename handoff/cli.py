@@ -66,13 +66,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--token-mode",
         choices=VALID_MODES,
-        default="auto",
+        default="chars4",
         help=(
-            "Tokenizer used in the stderr summary line. "
-            "'auto' (default) prefers the offline HF tokenizer and falls back "
-            "to the chars/4 heuristic. 'hf' requires `transformers`; 'api' "
-            "requires the anthropic SDK + ANTHROPIC_API_KEY (network call); "
-            "'chars4' is the legacy heuristic."
+            "Tokenizer for the (cosmetic) stderr summary line. "
+            "'chars4' (default) is the dependency-free chars/4 heuristic — it "
+            "keeps /hand:off cold-start instant and quiet. 'auto'/'hf' load the "
+            "offline HF tokenizer (imports `transformers`: ~1.5s + a PyTorch "
+            "warning) for an exact count; 'api' uses the anthropic SDK + "
+            "ANTHROPIC_API_KEY (network call). The count never affects the brief."
         ),
     )
     return p.parse_args(argv)

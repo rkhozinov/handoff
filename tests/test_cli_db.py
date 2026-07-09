@@ -67,3 +67,20 @@ def test_no_db_skips_upsert(tmp_path, monkeypatch):
     assert rc == 0
     dbf = tmp_path / ".claude" / "compaction" / "sessions.db"
     assert not dbf.exists()  # never touched the DB
+
+
+def test_default_token_mode_is_chars4_no_heavy_import(tmp_path, monkeypatch):
+    """Cold-start guard: /hand:off must not pay the HF `transformers` import
+    just to size the (cosmetic) brief. The CLI defaults to the chars4 heuristic;
+    'auto'/'hf' stay opt-in via --token-mode. Regression: default was 'auto',
+    which loaded transformers (~1.5s + a PyTorch warning) on every run."""
+    import sys
+
+    ns = cli.parse_args(["--transcript", "x", "--session-id", SID, "--cwd", "/tmp/p"])
+    assert ns.token_mode == "chars4"
+
+    # A default run must not import transformers.
+    sys.modules.pop("transformers", None)
+    rc = _run(tmp_path, monkeypatch)  # defaults → chars4
+    assert rc == 0
+    assert "transformers" not in sys.modules

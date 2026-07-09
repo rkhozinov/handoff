@@ -61,6 +61,16 @@ BRIEF_PATH=$(
     --cwd "$REAL_CWD" \
     --recap "$RECAP"
 )
+RC=$?
+# Fail loud: a non-zero CLI, empty stdout, or missing brief must NOT print
+# HANDOFF_OK. Otherwise a broken run looks like a successful one.
+if [ "$RC" -ne 0 ] || [ -z "$BRIEF_PATH" ] || [ ! -f "$BRIEF_PATH" ]; then
+  echo "HANDOFF_ERROR: handoff.cli failed (exit=$RC, brief=[$BRIEF_PATH])."
+  echo "  transcript: $TRANSCRIPT"
+  echo "  re-run the block above; if it persists, run the CLI directly to see stderr."
+  exit 1
+fi
+
 STATUS=$(awk '/^---$/{c++;next} c==1 && /^status:/{print $2; exit}' "$BRIEF_PATH")
 SIGNAL=$(awk '/^---$/{c++;next} c==1 && /^completion_signal:/{print $2; exit}' "$BRIEF_PATH")
 echo "HANDOFF_OK"
