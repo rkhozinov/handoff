@@ -155,6 +155,17 @@ def load_jsonl(path: str) -> list[dict]:
     return out
 
 
+def cwd_from_entries(entries: list[dict]) -> str | None:
+    """Last non-empty per-event `cwd` — the session's authoritative cwd. The
+    shell cwd passed to /hand:off can drift into a worktree mid-session; the
+    transcript records the real one."""
+    for e in reversed(entries):
+        c = e.get("cwd")
+        if c:
+            return c
+    return None
+
+
 def is_real_user(entry: dict) -> bool:
     """A `user` entry is a REAL user input only if its content is a plain
     string or a list of text-only blocks. Synthetic wraps holding tool_result

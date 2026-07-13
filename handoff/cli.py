@@ -15,7 +15,12 @@ import sys
 from pathlib import Path
 
 from handoff.archive import archive_full_session
-from handoff.extract import extract_agent_reports, extract_title, load_jsonl
+from handoff.extract import (
+    cwd_from_entries,
+    extract_agent_reports,
+    extract_title,
+    load_jsonl,
+)
 from handoff.lifecycle import (
     detect_status,
     extract_recap,
@@ -91,9 +96,13 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("Transcript is empty or unreadable\n")
         return 1
 
+    # The transcript records the session's real cwd; the shell --cwd passed by
+    # /hand:off can be a drifted worktree path. Prefer the authoritative one.
+    cwd = cwd_from_entries(entries) or args.cwd
+
     archive_hash = None
     if not args.no_archive:
-        archive_hash = archive_full_session(transcript, args.session_id, args.cwd)
+        archive_hash = archive_full_session(transcript, args.session_id, cwd)
 
     out_dir = Path(os.path.expanduser(args.out_dir))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -102,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     detected_status, detected_signal = detect_status(entries)
     fm = resolve_frontmatter(
         session_id=args.session_id,
-        cwd=args.cwd,
+        cwd=cwd,
         detected_status=detected_status,
         detected_signal=detected_signal,
         archive_hash=archive_hash,
@@ -115,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     brief = render_brief(
         entries,
         session_id=args.session_id,
-        cwd=args.cwd,
+        cwd=cwd,
         archive_hash=archive_hash,
         frontmatter=render_frontmatter(fm),
     )
@@ -128,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         full_reports = extract_agent_reports(entries, max_chars=0)
         agent_count = len(full_reports)
         agent_stored = store_agent_reports(
-            full_reports, project_tag=project_tag_from_cwd(args.cwd)
+            full_reports, project_tag=project_tag_from_cwd(cwd)
         )
 
     brief_path.write_text(brief, encoding="utf-8")

@@ -38,16 +38,19 @@ sessions DB (`~/.claude/compaction/sessions.db`).
 Run this single bash block, substituting your recap into `RECAP`. The
 session id comes straight from
 `${CLAUDE_SESSION_ID}` — Claude Code's own substitution, so there's
-no ambiguity about which session is being archived. The transcript
-path is derived from the same session id + cwd, matching CC's
-project-dir encoding (`[^A-Za-z0-9-]` → `-`).
+no ambiguity about which session is being archived. The transcript is
+located by that session id alone (a globally-unique UUID = the jsonl
+filename), so it's found regardless of the shell's cwd.
 
 ```bash
 RECAP='<your 1-2 sentence recap here>'
 SID="${CLAUDE_SESSION_ID}"
 REAL_CWD=$(pwd -P)
-ENC=$(printf '%s' "$REAL_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
-TRANSCRIPT="$HOME/.claude/projects/$ENC/$SID.jsonl"
+# CC fixes the transcript dir at session start; the shell cwd can drift
+# (e.g. into a git worktree) mid-session. The session id is a unique UUID and
+# is the transcript filename, so locate the jsonl by id, not by slugifying the
+# (possibly drifted) cwd.
+TRANSCRIPT=$(find "$HOME/.claude/projects" -maxdepth 2 -name "$SID.jsonl" 2>/dev/null | head -1)
 
 if [ -z "$SID" ] || [ ! -f "$TRANSCRIPT" ]; then
   echo "HANDOFF_ERROR sid=$SID transcript=$TRANSCRIPT"

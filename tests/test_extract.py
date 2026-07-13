@@ -683,3 +683,18 @@ def test_extract_title_skips_empty():
         {"type": "ai-title", "aiTitle": "  "},
     ]
     assert extract.extract_title(entries) == "good"
+
+
+# ---------- cwd_from_entries ----------
+
+def test_cwd_from_entries_returns_last_non_empty():
+    entries = [
+        {"type": "user", "cwd": "/repo/proj"},
+        {"type": "assistant"},                      # no cwd key
+        {"type": "user", "cwd": "/repo/proj/sub"},  # last non-empty wins
+    ]
+    assert extract.cwd_from_entries(entries) == "/repo/proj/sub"
+
+def test_cwd_from_entries_none_when_absent():
+    assert extract.cwd_from_entries([_user_str("hi")]) is None
+    assert extract.cwd_from_entries([{"type": "user", "cwd": ""}]) is None
