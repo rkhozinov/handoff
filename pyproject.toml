@@ -7,9 +7,7 @@ name = "handoff"
 version = "1.1.0"
 description = "Deterministic transcript trimmer + memory archive replacing Claude Code's lossy default /compact"
 requires-python = ">=3.11"
-dependencies = [
-    "memory @ file:///Users/rkhozinov/repos/memory",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
@@ -30,9 +28,6 @@ tui = [
 [project.scripts]
 handoff = "handoff.cli:main"
 hand = "handoff.dbcli:main"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["handoff"]
