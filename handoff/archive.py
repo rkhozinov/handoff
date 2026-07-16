@@ -14,7 +14,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +26,15 @@ from handoff.transcript import trim_transcript
 
 def _marker_path(session_id: str) -> Path:
     return Path.home() / ".claude" / "memory" / "extracted" / f"{session_id}.marker"
+
+
+def _memory_bin() -> str | None:
+    """Resolve the `memory` CLI. It's a uv-tool install under ~/.local/bin,
+    which isn't on the non-login-shell PATH this process usually runs under —
+    so fall back to that known location before giving up."""
+    return shutil.which("memory") or next(
+        (str(p) for p in [Path.home() / ".local" / "bin" / "memory"] if p.exists()), None
+    )
 
 
 def archive_full_session(
@@ -55,21 +67,36 @@ def archive_full_session(
     tags = ["source:auto", "session-archive", f"project:{project}"]
     metadata = {"session_id": sid_short, "source_jsonl": transcript_path}
 
-    try:
-        from memory.core import MemoryStore
-        result = MemoryStore().store_doc(
-            title=title,
-            body=body,
-            summary=summary,
-            doc_type="session-archive",
-            tags=tags,
-            metadata=metadata,
-        )
-    except ImportError:
-        sys.stderr.write("[archive] `memory` SDK not installed; skipping archive\n")
+    mem = _memory_bin()
+    if mem is None:
+        sys.stderr.write("[archive] `memory` CLI not found (not on PATH, not in ~/.local/bin); skipping archive\n")
         return None
-    except Exception as e:
-        sys.stderr.write(f"[archive] memory doc store failed: {e}\n")
+
+    # Pass the body via a temp file (--body-file): trimmed transcripts run to
+    # hundreds of KB, past the argv size limit an inline --body would hit.
+    with tempfile.NamedTemporaryFile("w", suffix=".md", encoding="utf-8", delete=False) as f:
+        f.write(body)
+        body_file = f.name
+    try:
+        proc = subprocess.run(
+            [mem, "doc", "store", "--title", title, "--summary", summary,
+             "--body-file", body_file, "--type", "session-archive",
+             "--tags", ",".join(tags), "--metadata", json.dumps(metadata)],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.stderr.write(f"[archive] memory doc store failed to run: {e}\n")
+        return None
+    finally:
+        os.unlink(body_file)
+
+    if proc.returncode != 0:
+        sys.stderr.write(f"[archive] memory doc store exited {proc.returncode}: {proc.stderr.strip()}\n")
+        return None
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        sys.stderr.write(f"[archive] could not parse memory output: {proc.stdout.strip()[:200]}\n")
         return None
 
     content_hash = result.get("content_hash")

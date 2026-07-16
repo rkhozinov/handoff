@@ -1,11 +1,18 @@
-"""Tests for the optional memory-recall integration."""
+"""Tests for the optional memory-recall integration.
+
+store_agent_reports shells out to the `memory` CLI (`memory store -`, content
+via stdin) rather than importing a `memory` SDK. Tests mock `_memory_bin`
+(binary resolution) and `subprocess.run` (the CLI call).
+"""
 from __future__ import annotations
 
-import sys
-import types
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from handoff import recall
+
+
+FAKE_BIN = "/fake/bin/memory"
 
 
 # ---------- project_tag_from_cwd ----------
@@ -20,18 +27,22 @@ def test_project_tag_trailing_slash():
 
 # ---------- helpers ----------
 
-def _fake_memory_modules(store_instance):
-    """Return a sys.modules patch dict that injects a fake memory.core."""
-    fake_core = types.ModuleType("memory.core")
-    fake_core.MemoryStore = MagicMock(return_value=store_instance)
-    fake_pkg = types.ModuleType("memory")
-    return {"memory": fake_pkg, "memory.core": fake_core}
+def _capture_calls(calls: list, status: str = "stored", returncode: int = 0):
+    """subprocess.run replacement recording {argv, input(=stdin body)} per call."""
+    def fake_run(argv, **kwargs):
+        calls.append({"argv": argv, "input": kwargs.get("input", "")})
+        return SimpleNamespace(
+            returncode=returncode,
+            stdout='{"status": "%s", "content_hash": "abc123"}' % status,
+            stderr="",
+        )
+    return fake_run
 
 
 # ---------- store_agent_reports ----------
 
-def test_store_agent_reports_no_sdk_returns_zero():
-    with patch.dict(sys.modules, {"memory": None, "memory.core": None}):
+def test_store_agent_reports_no_cli_returns_zero():
+    with patch("handoff.recall._memory_bin", return_value=None):
         n = recall.store_agent_reports(
             [("desc", "subtype", "x" * 500)], project_tag="project:foo"
         )
@@ -39,34 +50,53 @@ def test_store_agent_reports_no_sdk_returns_zero():
 
 
 def test_store_agent_reports_skips_short_stubs():
-    fake_instance = MagicMock()
-    fake_instance.store.return_value = {"status": "stored", "content_hash": "abc"}
-    with patch.dict(sys.modules, _fake_memory_modules(fake_instance)):
+    calls: list = []
+    with patch("handoff.recall._memory_bin", return_value=FAKE_BIN), \
+         patch("handoff.recall.subprocess.run", side_effect=_capture_calls(calls)):
         n = recall.store_agent_reports([("d", "s", "tiny")], project_tag="project:foo")
     assert n == 0
-    fake_instance.store.assert_not_called()
+    assert calls == []
 
 
 def test_store_agent_reports_passes_tags_and_type():
-    fake_instance = MagicMock()
-    fake_instance.store.return_value = {"status": "stored", "content_hash": "abc123"}
-    with patch.dict(sys.modules, _fake_memory_modules(fake_instance)):
+    calls: list = []
+    with patch("handoff.recall._memory_bin", return_value=FAKE_BIN), \
+         patch("handoff.recall.subprocess.run", side_effect=_capture_calls(calls)):
         n = recall.store_agent_reports(
             [("research X", "explore", "y" * 800)], project_tag="project:foo"
         )
     assert n == 1
-    fake_instance.store.assert_called_once()
-    call_kw = fake_instance.store.call_args.kwargs
-    assert "[Agent Report: research X]" in call_kw["content"]
-    assert "project:foo" in call_kw["tags"]
-    assert "source:agent-report" in call_kw["tags"]
-    assert "agent:explore" in call_kw["tags"]
-    assert call_kw["memory_type"] == "learning"
+    assert len(calls) == 1
+    argv, body = calls[0]["argv"], calls[0]["input"]
+    assert argv[:3] == [FAKE_BIN, "store", "-"]
+    assert argv[argv.index("--type") + 1] == "learning"
+    tags = argv[argv.index("--tags") + 1].split(",")
+    assert "project:foo" in tags
+    assert "source:agent-report" in tags
+    assert "agent:explore" in tags
+    assert "[Agent Report: research X]" in body
 
 
-def test_store_agent_reports_swallows_store_exception():
-    fake_instance = MagicMock()
-    fake_instance.store.side_effect = RuntimeError("db locked")
-    with patch.dict(sys.modules, _fake_memory_modules(fake_instance)):
+def test_store_agent_reports_swallows_nonzero_exit():
+    calls: list = []
+    with patch("handoff.recall._memory_bin", return_value=FAKE_BIN), \
+         patch("handoff.recall.subprocess.run", side_effect=_capture_calls(calls, returncode=1)):
+        n = recall.store_agent_reports([("d", "s", "x" * 500)], project_tag="project:foo")
+    assert n == 0
+
+
+def test_store_agent_reports_swallows_run_exception():
+    def boom(argv, **kwargs):
+        raise OSError("no such binary")
+    with patch("handoff.recall._memory_bin", return_value=FAKE_BIN), \
+         patch("handoff.recall.subprocess.run", side_effect=boom):
+        n = recall.store_agent_reports([("d", "s", "x" * 500)], project_tag="project:foo")
+    assert n == 0
+
+
+def test_store_agent_reports_rejected_not_counted():
+    calls: list = []
+    with patch("handoff.recall._memory_bin", return_value=FAKE_BIN), \
+         patch("handoff.recall.subprocess.run", side_effect=_capture_calls(calls, status="rejected")):
         n = recall.store_agent_reports([("d", "s", "x" * 500)], project_tag="project:foo")
     assert n == 0
