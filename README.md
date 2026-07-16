@@ -54,10 +54,16 @@ user runs /hand:on → loads brief into the new session
 
 ## Install
 
+Prerequisite: the [`memory`](https://github.com/rkhozinov/memory) CLI must
+be installed and on PATH first — `/hand:off` shells out to `memory doc
+store`/`search` to archive sessions, and `hand`'s Python package itself
+needs building via `uv tool install`.
+
 ```bash
 git clone https://github.com/<you>/handoff ~/repos/handoff
 cd ~/repos/handoff
-./install.sh
+uv tool install --force --editable .   # puts `hand` / `handoff` on PATH
+./install.sh                           # symlinks hooks + slash commands into ~/.claude
 ```
 
 `install.sh` is idempotent: re-running upgrades the symlinks and patches
