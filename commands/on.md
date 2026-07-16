@@ -3,6 +3,16 @@ description: Restore a /hand:off brief into the conversation. Pass the session i
 argument-hint: "[session-id|brief-path] [--all]"
 ---
 
+**ACT NOW — this is a command, not a description.** The moment you see
+`/hand:on`, run the resolution bash block under **## Resolution** below,
+then **Read the resolved brief with the Read tool** before doing or
+saying anything else. Do NOT reply "Ready" or ask "What task?" — the
+task is: restore the brief. Only after the brief is Read do you report
+what was restored and continue. The prose between here and ## Resolution
+is reference; the imperative is: resolve → Read → report.
+
+---
+
 Restore a /hand:off brief into the conversation.
 
 **Recommended: pass the session id `/hand:off` printed.** That's the
