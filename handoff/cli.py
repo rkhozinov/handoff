@@ -159,8 +159,14 @@ def main(argv: list[str] | None = None) -> int:
     print(str(brief_path))
     brief_bytes = len(brief.encode("utf-8"))
     brief_tok = count_tokens(brief, mode=args.token_mode)
+    # ponytail: byte ratio, not tokens — under the default chars4 mode a token
+    # ratio is bytes//4 on both sides, i.e. the same number for a real
+    # tokenizer pass over an 80MB jsonl. stat() costs nothing, no re-read.
+    raw_bytes = os.path.getsize(transcript)
+    saved_pct = 100 * (1 - brief_bytes / max(1, raw_bytes))
     sys.stderr.write(
         f"brief={brief_bytes}B (~{brief_tok} tok)  "
+        f"raw={raw_bytes}B  saved={saved_pct:.1f}%  "
         f"archive={archive_hash[:12] if archive_hash else 'none'}  "
         f"agent_reports={agent_stored}/{agent_count}  "
         f"status={fm['status']}({fm['completion_signal']})  "

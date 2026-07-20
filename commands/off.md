@@ -57,12 +57,13 @@ if [ -z "$SID" ] || [ ! -f "$TRANSCRIPT" ]; then
   exit 1
 fi
 
+ERRLOG=$(mktemp)
 BRIEF_PATH=$(
   cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.cli \
     --transcript "$TRANSCRIPT" \
     --session-id "$SID" \
     --cwd "$REAL_CWD" \
-    --recap "$RECAP"
+    --recap "$RECAP" 2>"$ERRLOG"
 )
 RC=$?
 # Fail loud: a non-zero CLI, empty stdout, or missing brief must NOT print
@@ -71,15 +72,20 @@ if [ "$RC" -ne 0 ] || [ -z "$BRIEF_PATH" ] || [ ! -f "$BRIEF_PATH" ]; then
   echo "HANDOFF_ERROR: handoff.cli failed (exit=$RC, brief=[$BRIEF_PATH])."
   echo "  transcript: $TRANSCRIPT"
   echo "  re-run the block above; if it persists, run the CLI directly to see stderr."
+  cat "$ERRLOG"
+  rm -f "$ERRLOG"
   exit 1
 fi
 
 STATUS=$(awk '/^---$/{c++;next} c==1 && /^status:/{print $2; exit}' "$BRIEF_PATH")
 SIGNAL=$(awk '/^---$/{c++;next} c==1 && /^completion_signal:/{print $2; exit}' "$BRIEF_PATH")
+SIZE=$(awk '{for(i=1;i<=NF;i++) if($i ~ /^(brief|raw|saved)=/) printf "%s ", $i}' "$ERRLOG")
+rm -f "$ERRLOG"
 echo "HANDOFF_OK"
 echo "  recap:      $RECAP"
 echo "  session_id: $SID"
 echo "  brief:      $BRIEF_PATH"
+echo "  size:       $SIZE"
 echo "  status:     $STATUS ($SIGNAL)"
 echo "  db:         ~/.claude/compaction/sessions.db (row upserted)"
 echo
