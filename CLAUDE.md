@@ -100,10 +100,15 @@ when raw fixtures are absent.
   to derive both the session id and the transcript path from one source
   — don't decouple, that bug surfaced on 2026-05-08 (brief content
   belonged to a different session than the filename).
-- `/hand:on` lives at `commands/on.md`. Accepts `<session-id>` or a
-  full path. Bare `/hand:on` walks newest jsonls in the cwd's project dir
-  and Reads the first matching brief — non-deterministic when the cwd
-  has many parallel sessions, so prefer passing the session id.
+- `/hand:on` lives at `commands/on.md`. Accepts one or more
+  `<session-id>`s / full paths — each resolves independently and emits
+  its own `BRIEF_PATH`/`BRIEF_STATUS` pair, so several briefs can stack
+  into one session. Unresolvable args print `BRIEF_MISSING arg=<x>` and
+  are skipped; the picker only fires when NOTHING resolved.
+  `dbcli on` takes the same `nargs="+"` sid list. Bare `/hand:on` walks
+  newest jsonls in the cwd's project dir and Reads the first matching
+  brief — non-deterministic when the cwd has many parallel sessions, so
+  prefer passing the session id.
 - `/hand:done <sid> [--reopen]` lives at `commands/done.md`. Manual
   status flip — sets `completion_signal: manual`, which is sticky: a
   later `/hand:off` on the same sid will NOT auto-revive it.

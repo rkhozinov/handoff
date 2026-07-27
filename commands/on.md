@@ -1,6 +1,6 @@
 ---
-description: Restore a /hand:off brief into the conversation. Pass the session id (printed by /hand:off) for deterministic restore. Bare /hand:on only matches the CURRENT session id; otherwise reports BRIEF_MISSING and shows a picker (no silent fallback). Pass --all to include done briefs in the picker.
-argument-hint: "[session-id|brief-path] [--all]"
+description: Restore one or more /hand:off briefs into the conversation. Pass the session id (printed by /hand:off) for deterministic restore; pass several ids to stack multiple briefs into the same session. Bare /hand:on only matches the CURRENT session id; otherwise reports BRIEF_MISSING and shows a picker (no silent fallback). Pass --all to include done briefs in the picker.
+argument-hint: "[session-id|brief-path ...] [--all]"
 ---
 
 **ACT NOW — this is a command, not a description.** The moment you see
@@ -36,6 +36,11 @@ Behavior:
   and Read it. Flips the brief's `status:` frontmatter from
   `pending`/`in_progress` → `in_progress` and stamps `last_resumed`.
   **Recommended path.**
+* `/hand:on <sid-a> <sid-b> ...` — Restore several briefs into the
+  same session. Each argument resolves independently and is Read in
+  the order given; later briefs layer on top of earlier ones. Mixed
+  ids and paths are fine. Unresolvable arguments print
+  `BRIEF_MISSING arg=<x>` and are skipped — the rest still load.
 * `/hand:on <full-path>` — Read the absolute path directly. Useful
   when the brief lives outside the default compaction dir.
 * `/hand:on` (no args) — Try `${CLAUDE_SESSION_ID}.md` only. If
@@ -53,47 +58,54 @@ Run this single bash block. It accepts an optional argument
 on shell variable state across calls.
 
 ```bash
-ARG="$ARGUMENTS"
+ARGS="$ARGUMENTS"
 COMPACTION_DIR="$HOME/.claude/compaction"
 
 SHOW_ALL=0
-case " $ARG " in
-  *' --all '*|*' --all') SHOW_ALL=1; ARG="${ARG//--all/}";;
+case "$ARGS" in
+  *--all*) SHOW_ALL=1; ARGS="${ARGS//--all/}";;
 esac
-ARG="${ARG// /}"
 
-resolve_brief() {
-  # 1. Explicit path argument wins.
-  if [ -n "$ARG" ]; then
-    P="$ARG"
-    [ "${P#/}" = "$P" ] && P="$PWD/$P"  # relative → absolute
-    if [ -f "$P" ]; then
-      printf '%s' "$P"; return 0
-    fi
-    # Maybe the user passed just a session id; try that.
-    if [ -f "$COMPACTION_DIR/$ARG.md" ]; then
-      printf '%s' "$COMPACTION_DIR/$ARG.md"; return 0
-    fi
-    return 1
+# Resolve one token: absolute/relative path first, then bare session id.
+resolve_one() {
+  P="$1"
+  [ "${P#/}" = "$P" ] && P="$PWD/$P"  # relative → absolute
+  if [ -f "$P" ]; then
+    printf '%s' "$P"; return 0
   fi
-
-  # 2. Current session id only (rare success — only when /hand:off was
-  # run AFTER the most recent /clear). No silent fallback to other
-  # sessions' briefs — that produced wrong-brief footguns. If missing,
-  # fall through to BRIEF_MISSING + picker so the user picks.
-  CUR="$COMPACTION_DIR/${CLAUDE_SESSION_ID}.md"
-  if [ -f "$CUR" ]; then
-    printf '%s' "$CUR"; return 0
+  if [ -f "$COMPACTION_DIR/$1.md" ]; then
+    printf '%s' "$COMPACTION_DIR/$1.md"; return 0
   fi
   return 1
 }
 
-if BRIEF=$(resolve_brief); then
-  echo "BRIEF_PATH=$BRIEF"
-  STATUS=$(awk '/^---$/{c++;next} c==1 && /^status:/{print $2; exit}' "$BRIEF")
-  echo "BRIEF_STATUS=$STATUS"
-else
-  echo "BRIEF_MISSING arg=$ARG sid=${CLAUDE_SESSION_ID} show_all=$SHOW_ALL"
+emit() {
+  echo "BRIEF_PATH=$1"
+  echo "BRIEF_STATUS=$(awk '/^---$/{c++;next} c==1 && /^status:/{print $2; exit}' "$1")"
+}
+
+# 1. Explicit args win. Every token is resolved independently, so
+# `/hand:on <sid-a> <sid-b>` emits one BRIEF_PATH/BRIEF_STATUS pair per
+# brief — restore several briefs into one session.
+for A in $ARGS; do
+  if P=$(resolve_one "$A"); then
+    emit "$P"
+  else
+    echo "BRIEF_MISSING arg=$A sid=${CLAUDE_SESSION_ID} show_all=$SHOW_ALL"
+  fi
+done
+
+# 2. No args: current session id only (rare success — only when
+# /hand:off was run AFTER the most recent /clear). No silent fallback to
+# other sessions' briefs — that produced wrong-brief footguns. If
+# missing, fall through to BRIEF_MISSING + picker so the user picks.
+if [ -z "${ARGS// /}" ]; then
+  CUR="$COMPACTION_DIR/${CLAUDE_SESSION_ID}.md"
+  if [ -f "$CUR" ]; then
+    emit "$CUR"
+  else
+    echo "BRIEF_MISSING arg= sid=${CLAUDE_SESSION_ID} show_all=$SHOW_ALL"
+  fi
 fi
 ```
 
@@ -101,16 +113,18 @@ Decision tree based on stdout:
 
 * `BRIEF_PATH=<path>` followed by `BRIEF_STATUS=<status>` → Read the
   brief with the Read tool. Treat its contents as ground-truth
-  context for the resumed work.
+  context for the resumed work. **The block may print several
+  `BRIEF_PATH`/`BRIEF_STATUS` pairs** (one per argument) — Read every
+  one, in the order printed, before reporting.
 
-  After Read, update BOTH the brief file frontmatter and the sessions
-  DB row (status → `in_progress`, stamp `last_resumed`) via dbcli. It
-  declines to flip a `done` brief on its own and prints `HANDON_DONE`:
+  After the Reads, update BOTH the brief file frontmatter and the
+  sessions DB row (status → `in_progress`, stamp `last_resumed`) via
+  dbcli. Pass every restored sid in one call — it loops. It declines to
+  flip a `done` brief on its own and prints `HANDON_DONE` for that sid:
 
   ```bash
-  SID=$(basename "$BRIEF" .md)
-  cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli on "$SID" \
-    --dir "$(dirname "$BRIEF")"
+  cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli on \
+    <sid-1> [<sid-2> ...] --dir "$HOME/.claude/compaction"
   ```
 
   If `BRIEF_STATUS` is `done`, load the brief anyway (user asked
@@ -119,7 +133,10 @@ Decision tree based on stdout:
   `/hand:done <sid> --reopen` will revive it permanently.
 
 * `BRIEF_MISSING ...` → No brief found by either explicit path or
-  auto-discovery. Show the enriched picker so the user can choose:
+  auto-discovery. If at least one `BRIEF_PATH` was also printed, just
+  name the unresolved argument(s) and carry on with the briefs that
+  did resolve — do NOT show the picker. Only when NO brief resolved,
+  show the enriched picker so the user can choose:
 
   ```bash
   if [ "$SHOW_ALL" -eq 1 ]; then
@@ -157,7 +174,7 @@ Decision tree based on stdout:
   Accept the user's pick (number or session id prefix) and re-run
   `/hand:on <path>` for the chosen brief.
 
-After loading, print one line confirming what was restored:
+After loading, print one line per brief confirming what was restored:
 `Restored: <session_id> [<status>] from <created_ts>`.
 
 This command is idempotent for already-restored briefs — invoking it

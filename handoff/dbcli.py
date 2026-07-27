@@ -168,9 +168,13 @@ def _cmd_done(args) -> int:
 
 
 def _cmd_on(args) -> int:
-    ok, msg = do_resume(args.sid, compaction_dir=args.dir, db_path=args.db)
-    print(msg)
-    return 0 if ok else 1
+    rc = 0
+    for sid in args.sid:
+        ok, msg = do_resume(sid, compaction_dir=args.dir, db_path=args.db)
+        print(msg)
+        if not ok:
+            rc = 1
+    return rc
 
 
 def _cmd_rename(args) -> int:
@@ -382,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     pd.set_defaults(func=_cmd_done)
 
     po = sub.add_parser("on", help="Mark a brief resumed (status+last_resumed)")
-    po.add_argument("sid")
+    po.add_argument("sid", nargs="+", help="one or more session ids")
     _add_db_args(po)
     po.set_defaults(func=_cmd_on)
 

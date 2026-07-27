@@ -91,6 +91,27 @@ class TestOn:
         assert "HANDON_DONE" in capsys.readouterr().out
         assert _file_status(d)["status"] == "done"  # untouched
 
+    def test_multiple_sids(self, tmp_path, capsys):
+        """Several briefs restored into one session; a bad sid doesn't stop
+        the good ones (rc is still 1 so the caller sees the partial miss)."""
+        d, dbf = _setup(tmp_path, status="pending", last_resumed=None)
+        other = "11111111-2222-3333-4444-555555555555"
+        fm = _fm(session_id=other, status="pending", last_resumed=None)
+        (d / f"{other}.md").write_text(
+            render_frontmatter(fm) + "U: second\n", encoding="utf-8"
+        )
+        with db.connect(dbf) as conn:
+            db.upsert_session(conn, fm=fm, body="U: second\n")
+
+        rc = dbcli.main(["on", SID, other, "nope", "--dir", str(d), "--db", str(dbf)])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert out.count("HANDON_OK") == 2
+        assert "HANDON_ERROR" in out
+        with db.connect(dbf) as conn:
+            for sid in (SID, other):
+                assert db.get_session(conn, sid)["status"] == "in_progress"
+
 
 class TestListShowSearchRm:
     def test_list_renders_table(self, tmp_path, capsys):
