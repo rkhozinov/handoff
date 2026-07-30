@@ -24,3 +24,9 @@ build/
 *.swp
 .DS_Store
 uv.lock
+
+# Serena MCP workspace artifacts
+.serena/
+
+# Claude Code working notes — local-only, never push (has publish-hygiene rules)
+CLAUDE.md
