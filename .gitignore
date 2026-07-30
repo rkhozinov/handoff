@@ -28,5 +28,5 @@ uv.lock
 # Serena MCP workspace artifacts
 .serena/
 
-# Claude Code working notes — local-only, never push (has publish-hygiene rules)
-CLAUDE.md
+# Local-only Claude Code rules (publish-hygiene, names employer identifiers) — never push
+CLAUDE.local.md
