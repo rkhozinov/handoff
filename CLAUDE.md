@@ -40,12 +40,20 @@ regression — fix the filter, don't relax the invariant.
   `set_status`/`set_resumed`/`delete_session`/`rebuild_from_briefs`. Brief
   `.md` files stay authoritative; DB mirrors them and is rebuildable.
 - `handoff/dbcli.py` — `hand` CLI + the backend the /hand:* command bash
-  blocks call. `done`/`on`/`list`/`show`/`search`/`rm`/`rebuild`/`tui`.
+  blocks call. `done`/`on`/`list`/`show`/`search`/`rm`/`rebuild`/`tui`/
+  `tasks {list,export,import,copy}`.
   Every mutation edits the brief frontmatter file AND the DB row in one
   process (`do_done`/`do_resume`/`do_delete`) so they never drift.
 - `handoff/tui.py` — Textual 2-pane TUI (optional `[tui]` extra,
   lazy-imported). Left list pane, right scrollable brief. Reads the DB;
   mutating keys route through `dbcli.do_*`.
+- `handoff/tasks.py` — task carry-over across `/hand:off` → `/hand:on`.
+  Pure, path-parameterised, zero Claude Code coupling: `short_id`/`list_id`/
+  `tasks_dir`/`bundle_path`/`manifest_path` resolve paths, `read_tasks`
+  reads CC's dir, `make_bundle` exports, `plan_import` computes the id
+  remap + rewritten edges + dropped refs, `apply_plan` is the ONLY
+  effectful function (atomic per file). Keep that split — it's what makes
+  `--dry-run` free and the merge logic testable without a fake filesystem.
 - `handoff/recall.py` — `project_tag_from_cwd` + `store_agent_reports`.
   That's it. Older `build_query`/`search_memories`/`format_memory_line`
   were ripped (no callers post-tier1).
@@ -63,6 +71,10 @@ regression — fix the filter, don't relax the invariant.
 - `tier1`/`tier2` vocabulary in docstrings, comments, or symbols.
 - `**_legacy_kwargs` shims on `render_brief`.
 - Magic literals for the agent-report cutoff — use `AGENT_REPORT_MIN_CHARS`.
+- Filesystem access inside `tasks.plan_import`. It is pure on purpose;
+  `apply_plan` is the only effectful function in that module.
+- Task ids reused from holes in the destination. Merge allocates strictly
+  above `max(dest ids)` — a hole may be an id something still references.
 
 ## Magic constants worth knowing
 
@@ -71,13 +83,18 @@ regression — fix the filter, don't relax the invariant.
 - `extract.PASTED_PRESERVE_CHARS = 200` — terminal-output paste elision.
 - `extract.DEFAULT_TOOL_VALUE_LIMIT = 100`, `TOOL_VALUE_LIMITS["Bash"] = 60`.
 - `trim.ASSISTANT_TURN_MAX_CHARS = 4_000`.
+- `tasks.REQUIRED_KEYS` / `VALID_STATUSES` — mirror CC's zod schema. Don't
+  trim them to the subset the spec originally guessed; a task missing
+  `description` is invisible in `TaskList`.
+- `tasks.CONTROL_FILES = {".lock", ".highwatermark"}` — read-never,
+  write-never.
 - `_ANTHROPIC_MODEL = "claude-opus-4-7"` in tokenizer.py — bump when
   newer model lands.
 
 ## Test + bench workflow
 
 ```bash
-PYTHONPATH=. python3 -m pytest tests/ -q          # ~150 tests
+PYTHONPATH=. python3 -m pytest tests/ -q          # ~360 tests
 PYTHONPATH=. python3 scripts/bench.py             # invariant check across 6 fixtures
 PYTHONPATH=. python3 scripts/render_html.py       # docs/report.html (gitignored)
 ```
@@ -99,12 +116,20 @@ when raw fixtures are absent.
 - `/hand:off` lives at `commands/off.md`. Uses `${CLAUDE_SESSION_ID}`
   to derive both the session id and the transcript path from one source
   — don't decouple, that bug surfaced on 2026-05-08 (brief content
-  belonged to a different session than the filename).
+  belonged to a different session than the filename). It also exports the
+  session's task list to `~/.claude/compaction/tasks/<sid>.json`. That
+  step is strictly best-effort and swallows its own errors: the brief is
+  the primary artifact and a task-export failure must NEVER turn a
+  successful `HANDOFF_OK` into an error.
 - `/hand:on` lives at `commands/on.md`. Accepts one or more
   `<session-id>`s / full paths — each resolves independently and emits
   its own `BRIEF_PATH`/`BRIEF_STATUS` pair, so several briefs can stack
   into one session. Unresolvable args print `BRIEF_MISSING arg=<x>` and
   are skipped; the picker only fires when NOTHING resolved.
+  It also merges each brief's task bundle into the resumed session
+  (`--merge --only-open`), one call per sid. A missing bundle or
+  `HANDTASKS_EMPTY` means "that session had no tasks" — say nothing and
+  carry on; only `HANDTASKS_ERROR` is worth surfacing.
   `dbcli on` takes the same `nargs="+"` sid list. Bare `/hand:on` walks
   newest jsonls in the cwd's project dir and Reads the first matching
   brief — non-deterministic when the cwd has many parallel sessions, so
@@ -114,6 +139,47 @@ when raw fixtures are absent.
   later `/hand:off` on the same sid will NOT auto-revive it.
 - `/hand:list [--all] [--any-cwd]` lives at `commands/list.md`. Reads
   frontmatter, groups by status, defaults to current cwd + hides done.
+- `/hand:tasks` lives at `commands/tasks.md`. Manual door into the same
+  export/import machinery `/hand:off` and `/hand:on` drive automatically.
+
+## Claude Code's task store (undocumented — verified, not assumed)
+
+Read out of the CC binary (2.1.226) on 2026-08-11 and confirmed by a live
+injection probe. `handoff/tasks.py` is built on these five facts; re-derive
+them before assuming any of it still holds on a newer CC.
+
+1. **`listTasks` re-reads `<tasks-dir>/<list-id>/` on every call.** No
+   in-memory cache, so files written under a live session are picked up
+   immediately. This is what makes file-level import viable at all — the
+   spec's Plan B (replay via `TaskCreate`) is unnecessary. `plan_import`
+   still exposes `creation_order` (topological) so Plan B stays cheap to
+   reach for if this ever changes.
+2. **Every file is validated against a zod schema and a failure is dropped
+   SILENTLY** (logged, never surfaced). Required: `id`, `subject`,
+   `description`, `status` ∈ {pending, in_progress, completed}, `blocks`,
+   `blockedBy`. Optional: `activeForm`, `owner`, `metadata`. A task written
+   without `description` simply vanishes from `TaskList` with no
+   diagnostic — hence `_normalize` fills the required keys rather than
+   trusting the bundle. Unknown keys are stripped by zod on read but
+   survive our round-trip.
+3. **`.highwatermark` is the highest id ever _deleted_.** CC allocates the
+   next id as `max(max_file_id, highwatermark) + 1`. Allocating from
+   `max(dest ids) + 1` therefore can never collide with a future CC id.
+   We still never read or write it — same for `.lock`.
+4. **CC wipes the whole list once every task in it is `completed`** (a
+   background timer). That's why import skips completed tasks by default:
+   restoring a finished list would restore work that vanishes seconds
+   later.
+5. **The list id is `$CLAUDE_CODE_TASK_LIST_ID` → team name →
+   `session-<sid[:8]>`**, sanitized with `[^a-zA-Z0-9_-] → "-"`. An
+   agent-team session renames its dir to the team name, so `tasks_dir()`
+   takes a `list_id` override — don't hardcode the `session-` form.
+
+`listTasks` does NOT skip dotfiles (only its clear path does), so a sidecar
+inside CC's dir would be read and fail validation on every list. The import
+manifest lives at `~/.claude/compaction/tasks/imports/<dest-short>.json`,
+outside CC's directory, for exactly that reason. **Never write anything
+into `~/.claude/tasks/` that isn't a valid `<id>.json`.**
 
 ## Session lifecycle (frontmatter)
 

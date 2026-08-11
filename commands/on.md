@@ -1,5 +1,5 @@
 ---
-description: Restore one or more /hand:off briefs into the conversation. Pass the session id (printed by /hand:off) for deterministic restore; pass several ids to stack multiple briefs into the same session. Bare /hand:on only matches the CURRENT session id; otherwise reports BRIEF_MISSING and shows a picker (no silent fallback). Pass --all to include done briefs in the picker.
+description: Restore one or more /hand:off briefs into the conversation, along with each session's task list (blockedBy edges intact). Pass the session id (printed by /hand:off) for deterministic restore; pass several ids to stack multiple briefs into the same session. Bare /hand:on only matches the CURRENT session id; otherwise reports BRIEF_MISSING and shows a picker (no silent fallback). Pass --all to include done briefs in the picker.
 argument-hint: "[session-id|brief-path ...] [--all]"
 ---
 
@@ -126,6 +126,30 @@ Decision tree based on stdout:
   cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli on \
     <sid-1> [<sid-2> ...] --dir "$HOME/.claude/compaction"
   ```
+
+  Then restore each brief's **task list** into this session. Claude Code
+  keys tasks to the session id and `/clear` mints a new one, so the todo
+  graph is otherwise lost. Run one call per restored sid — merge mode
+  allocates fresh ids above whatever this session already holds, so
+  several briefs stack without collision, and a re-run is a no-op:
+
+  ```bash
+  cd ~/repos/handoff && for S in <sid-1> [<sid-2> ...]; do
+    PYTHONPATH=. python3 -m handoff.dbcli tasks import \
+      "$HOME/.claude/compaction/tasks/$S.json" \
+      --to "${CLAUDE_SESSION_ID}" --merge
+  done
+  ```
+
+  Report one line per source, e.g.
+  `Tasks: 12 restored from 9517a280 (1 blocked-by ref dropped)`.
+  `HANDTASKS_EMPTY` and a missing bundle both mean "that session had no
+  tasks" — say nothing about tasks and carry on; the brief is what
+  matters. Only `HANDTASKS_ERROR` is worth surfacing.
+
+  Completed tasks are skipped by design: CC wipes a task list once every
+  task in it is completed, so restoring a finished list would restore
+  work that vanishes again on its own. `--all` overrides this.
 
   If `BRIEF_STATUS` is `done`, load the brief anyway (user asked
   explicitly by sid) — `dbcli on` will print `HANDON_DONE` and leave it

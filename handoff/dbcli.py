@@ -4,17 +4,18 @@ Every mutation edits the brief `.md` frontmatter file AND the sessions.db row in
 one process, so the authoritative file and its DB mirror never drift. The TUI's
 mutating actions call the `do_*` helpers here for the same reason.
 
-Subcommands: done, on, list, show, search, rm, rebuild, tui.
+Subcommands: done, on, list, show, search, rm, rebuild, tui, tasks.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
 from pathlib import Path
 
-from handoff import db
+from handoff import db, tasks
 from handoff.extract import extract_title, load_jsonl
 from handoff.lifecycle import (
     now_iso,
@@ -351,6 +352,205 @@ def _cmd_rebuild(args) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# task carry-over (`hand tasks …`)
+#
+# Machine-readable first token, like HANDOFF_OK / HANDDONE_OK — the /hand:*
+# bash blocks branch on it. HANDTASKS_EMPTY is rc 0 on purpose: a session with
+# no tasks is normal and must never break /hand:off or /hand:on.
+# --------------------------------------------------------------------------- #
+def _short(sid: str) -> str:
+    try:
+        return tasks.short_id(sid)
+    except ValueError:
+        return sid
+
+
+def _emit(lines: list[str], warnings: list[str]) -> None:
+    for line in lines:
+        print(line)
+    for w in warnings:
+        print(f"  warn: {w}")
+
+
+def _load_bundle(path: str) -> tuple[dict | None, str]:
+    p = Path(os.path.expanduser(path))
+    if not p.is_file():
+        return None, f"HANDTASKS_ERROR reason=no-such-bundle bundle={p}"
+    try:
+        bundle = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return None, f"HANDTASKS_ERROR reason=bad-bundle bundle={p} ({e})"
+    if not isinstance(bundle, dict) or not isinstance(bundle.get("tasks"), list):
+        return None, f"HANDTASKS_ERROR reason=bad-bundle bundle={p} (no tasks array)"
+    return bundle, ""
+
+
+def do_tasks_export(
+    sid: str, *, tasks_root: str, bundle_dir: str, out: str | None, list_id: str | None
+) -> tuple[int, list[str], list[str]]:
+    """Read a session's task dir → a bundle file. Lossless: completed tasks
+    are kept, because filtering is an import-time decision."""
+    try:
+        src_dir = tasks.tasks_dir(sid, base=tasks_root, list_id=list_id)
+    except ValueError:
+        return 1, [f"HANDTASKS_ERROR reason=bad-session-id sid={sid}"], []
+
+    found, warnings = tasks.read_tasks(src_dir)
+    if not found:
+        return 0, [f"HANDTASKS_EMPTY sid={_short(sid)} (no tasks to export)"], warnings
+
+    dest = Path(os.path.expanduser(out)) if out else tasks.bundle_path(sid, base=bundle_dir)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        json.dumps(tasks.make_bundle(sid, found), indent=2) + "\n", encoding="utf-8"
+    )
+    return 0, [
+        f"HANDTASKS_OK op=export sid={_short(sid)} tasks={len(found)} out={dest}"
+    ], warnings
+
+
+def do_tasks_import(
+    bundle: dict,
+    dest_sid: str,
+    *,
+    op: str,
+    tasks_root: str,
+    bundle_dir: str,
+    list_id: str | None,
+    mode: str,
+    only_open: bool,
+    dry_run: bool,
+) -> tuple[int, list[str], list[str]]:
+    """Merge a bundle into a destination session's task dir."""
+    try:
+        dest_dir = tasks.tasks_dir(dest_sid, base=tasks_root, list_id=list_id)
+        manifest = tasks.manifest_path(dest_sid, base=bundle_dir)
+    except ValueError:
+        return 1, [f"HANDTASKS_ERROR reason=bad-session-id sid={dest_sid}"], []
+
+    source = str(bundle.get("source_session_id") or "?")
+    if not bundle.get("tasks"):
+        return 0, [f"HANDTASKS_EMPTY sid={_short(source)} (bundle has no tasks)"], []
+
+    dest_tasks, warnings = tasks.read_tasks(dest_dir)
+    plan = tasks.plan_import(
+        bundle,
+        dest_tasks,
+        mode=mode,
+        only_open=only_open,
+        already_imported=tasks.read_manifest(manifest),
+    )
+    warnings.extend(plan.warnings)
+
+    token = "HANDTASKS_DRYRUN" if dry_run else "HANDTASKS_OK"
+    summary = (
+        f"{token} op={op} source={_short(source)} dest={_short(dest_sid)} "
+        f"imported={plan.imported} skipped={plan.skipped} "
+        f"dropped_refs={len(plan.dropped_refs)} mode={plan.mode}"
+    )
+    if dry_run:
+        summary += " (nothing written)"
+    else:
+        tasks.apply_plan(plan, dest_dir, manifest)
+
+    lines = [summary]
+    for src_id, field, ref in plan.dropped_refs:
+        # Either the ref was already dangling at export time, or --only-open
+        # filtered its target out. From here the two are indistinguishable.
+        lines.append(f"  dropped: task {src_id}.{field} → {ref} (not imported)")
+    if plan.stripped_owners:
+        lines.append(f"  owner cleared on: {', '.join(plan.stripped_owners)}")
+    return 0, lines, warnings
+
+
+def _cmd_tasks_list(args) -> int:
+    try:
+        d = tasks.tasks_dir(args.sid, base=args.tasks_dir, list_id=args.list_id)
+    except ValueError:
+        print(f"HANDTASKS_ERROR reason=bad-session-id sid={args.sid}")
+        return 1
+    found, warnings = tasks.read_tasks(d)
+    if not found:
+        _emit([f"HANDTASKS_EMPTY sid={_short(args.sid)} (no tasks)"], warnings)
+        return 0
+
+    lines = [f"HANDTASKS_OK op=list sid={_short(args.sid)} tasks={len(found)}", ""]
+    for t in found:
+        edges = " ".join(
+            f"{f}={','.join(t[f])}" for f in tasks.REF_FIELDS if t.get(f)
+        )
+        lines.append(f"  {t['id']:>3}  {t['status']:<12}  {t['subject']}")
+        if edges:
+            lines.append(f"       {edges}")
+    _emit(lines, warnings)
+    return 0
+
+
+def _cmd_tasks_export(args) -> int:
+    rc, lines, warnings = do_tasks_export(
+        args.sid,
+        tasks_root=args.tasks_dir,
+        bundle_dir=args.bundle_dir,
+        out=args.out,
+        list_id=args.list_id,
+    )
+    _emit(lines, warnings)
+    return rc
+
+
+def _cmd_tasks_import(args) -> int:
+    bundle, err = _load_bundle(args.bundle)
+    if bundle is None:
+        print(err)
+        return 1
+    rc, lines, warnings = do_tasks_import(
+        bundle,
+        args.to,
+        op="import",
+        tasks_root=args.tasks_dir,
+        bundle_dir=args.bundle_dir,
+        list_id=args.list_id,
+        mode=tasks.MODE_REPLACE if args.replace else tasks.MODE_MERGE,
+        only_open=not args.all,
+        dry_run=args.dry_run,
+    )
+    _emit(lines, warnings)
+    return rc
+
+
+def _cmd_tasks_copy(args) -> int:
+    """export | import in one call, without a bundle file on disk."""
+    try:
+        src_dir = tasks.tasks_dir(
+            getattr(args, "from"), base=args.tasks_dir, list_id=args.from_list_id
+        )
+    except ValueError:
+        print(f"HANDTASKS_ERROR reason=bad-session-id sid={getattr(args, 'from')}")
+        return 1
+    found, warnings = tasks.read_tasks(src_dir)
+    if not found:
+        _emit(
+            [f"HANDTASKS_EMPTY sid={_short(getattr(args, 'from'))} (no tasks to copy)"],
+            warnings,
+        )
+        return 0
+
+    rc, lines, more = do_tasks_import(
+        tasks.make_bundle(getattr(args, "from"), found),
+        args.to,
+        op="copy",
+        tasks_root=args.tasks_dir,
+        bundle_dir=args.bundle_dir,
+        list_id=args.list_id,
+        mode=tasks.MODE_REPLACE if args.replace else tasks.MODE_MERGE,
+        only_open=not args.all,
+        dry_run=args.dry_run,
+    )
+    _emit(lines, warnings + more)
+    return rc
+
+
 def _cmd_tui(args) -> int:
     try:
         from handoff import tui
@@ -444,7 +644,78 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_args(pt)
     pt.set_defaults(func=_cmd_tui)
 
+    _add_tasks_parser(sub)
     return p
+
+
+def _add_tasks_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--tasks-dir", default=tasks.DEFAULT_TASKS_DIR, help="CC tasks dir")
+    p.add_argument("--bundle-dir", default=tasks.DEFAULT_BUNDLE_DIR, help="Bundle dir")
+    p.add_argument(
+        "--list-id",
+        default=None,
+        help=(
+            "Task-list id override (an agent-team session names its dir after "
+            "the team, not the session). On import/copy this is the DESTINATION."
+        ),
+    )
+
+
+def _add_tasks_import_args(p: argparse.ArgumentParser) -> None:
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--merge", action="store_true", help="Default: keep dest tasks")
+    mode.add_argument(
+        "--replace",
+        action="store_true",
+        help="Clear the dest task files first (loses data — opt-in)",
+    )
+    p.add_argument(
+        "--only-open",
+        dest="only_open",
+        action="store_true",
+        help="Skip completed tasks (the default; accepted for explicitness)",
+    )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Import completed tasks too. CC wipes a list once every task in it "
+            "is completed, so an all-completed import can vanish on its own."
+        ),
+    )
+    p.add_argument("--dry-run", action="store_true", help="Plan only, write nothing")
+
+
+def _add_tasks_parser(sub) -> None:
+    """`hand tasks …` — carry a task list across /hand:off → /hand:on."""
+    pt = sub.add_parser("tasks", help="Export/import a session's task list")
+    act = pt.add_subparsers(dest="action", required=True)
+
+    pl = act.add_parser("list", help="Show a session's tasks")
+    pl.add_argument("sid")
+    _add_tasks_args(pl)
+    pl.set_defaults(func=_cmd_tasks_list)
+
+    pe = act.add_parser("export", help="Write a session's tasks to a bundle")
+    pe.add_argument("sid")
+    pe.add_argument("--out", default=None, help="Bundle path (default: <bundle-dir>/<sid>.json)")
+    _add_tasks_args(pe)
+    pe.set_defaults(func=_cmd_tasks_export)
+
+    pi = act.add_parser("import", help="Merge a bundle into a session's tasks")
+    pi.add_argument("bundle")
+    pi.add_argument("--to", required=True, help="Destination session id")
+    _add_tasks_args(pi)
+    _add_tasks_import_args(pi)
+    pi.set_defaults(func=_cmd_tasks_import)
+
+    pc = act.add_parser("copy", help="export | import in one call")
+    pc.add_argument("--from", required=True, help="Source session id")
+    pc.add_argument("--to", required=True, help="Destination session id")
+    pc.add_argument("--from-list-id", default=None, help="Source task-list id override")
+    _add_tasks_args(pc)
+    _add_tasks_import_args(pc)
+    pc.set_defaults(func=_cmd_tasks_copy)
 
 
 def main(argv: list[str] | None = None) -> int:

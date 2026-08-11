@@ -31,12 +31,24 @@ dropped is recoverable later via `memory doc search`.
         │
         ▼
   trim_and_archive  ──┬──▶ memory doc store      (full session, recoverable)
-                      └──▶ ~/.claude/compaction/<session>.md  (trimmed brief)
-                                                  ▲
-                                                  │
-                                          /hand:on (explicit)
-                                          Read tool → injected into context
+                      ├──▶ ~/.claude/compaction/<session>.md  (trimmed brief)
+                      │                           ▲
+                      └──▶ ~/.claude/compaction/tasks/<session>.json
+                                                  │      (task list + edges)
+                                                  │            ▲
+                                          /hand:on (explicit)  │
+                                          Read tool → context ─┘
+                                          merge → ~/.claude/tasks/session-<id>/
 ```
+
+The task list travels with the brief. Claude Code keys `TaskCreate`/`TaskList`
+state to the session id and `/clear` mints a new one, so the todo graph — often
+the most compressed statement of "what's left" — is otherwise dropped on every
+handoff. `/hand:on` merges it back with the `blockedBy` edges intact: imported
+tasks get fresh ids above whatever the new session already holds, every edge is
+rewritten through that id map, and a reference to a task that didn't come along
+is dropped from the array *and reported*. Existing tasks are never touched and
+re-running is a no-op.
 
 User-facing flow:
 
@@ -75,7 +87,8 @@ Run `/hand:off` when the context starts filling. It:
 
 1. Archives the full session as a `memory doc` (recoverable via `memory doc search`)
 2. Writes a deterministic trimmed brief to `~/.claude/compaction/<session_id>.md`
-3. Auto-stores any sub-agent reports as memory entries
+3. Exports the task list to `~/.claude/compaction/tasks/<session_id>.json`
+4. Auto-stores any sub-agent reports as memory entries
 
 Briefs are keyed by `session_id`. Claude Code keeps `session_id` stable across
 `/clear` and `claude -c` resume, so `/hand:on` deterministically restores the
@@ -139,6 +152,32 @@ PYTHONPATH=. python3 -m handoff.dbcli rebuild   # backfill / self-heal from brie
 per-row goal hint. Under the hood it queries the DB via
 `handoff.dbcli`, the same backend `/hand:on` and `/hand:done` use to keep
 the brief file frontmatter and the DB row in sync.
+
+### Task carry-over
+
+`/hand:off` exports the session's Claude Code task list next to the brief
+and `/hand:on` merges it into the resumed session. Manual control is
+`/hand:tasks` (or `hand tasks`):
+
+```bash
+hand tasks list   <sid>                       # what a brief will restore
+hand tasks export <sid> [--out FILE]          # lossless — keeps completed
+hand tasks import <bundle> --to <sid> [--replace] [--all] [--dry-run]
+hand tasks copy   --from <sid> --to <sid>     # export | import in one call
+```
+
+Merge is the default and never touches the destination's tasks. Completed
+tasks are skipped on import: Claude Code wipes a task list once every task
+in it is completed, so restoring a finished list would restore work that
+disappears again on its own. `--all` overrides that; `--replace` clears the
+destination first and keeps the bundle's original ids (the one mode that
+loses data, hence opt-in).
+
+The store CC writes (`~/.claude/tasks/session-<8hex>/<id>.json`) is
+undocumented, so `handoff/tasks.py` treats it defensively: unknown keys
+survive a round-trip, a malformed file warns instead of raising, `.lock`
+and `.highwatermark` are never read or written, and the import manifest
+lives outside CC's directory entirely.
 
 ### Session TUI
 

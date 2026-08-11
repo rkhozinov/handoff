@@ -1,5 +1,5 @@
 ---
-description: Snapshot the current session into a deterministic brief + memory doc archive. Run before /clear when context is filling up. Bypasses Claude Code's lossy /compact.
+description: Snapshot the current session into a deterministic brief + memory doc archive + a task-list bundle. Run before /clear when context is filling up. Bypasses Claude Code's lossy /compact.
 ---
 
 The default `/compact` summarizer paraphrases code, file paths, and decisions. This command bypasses it.
@@ -81,12 +81,26 @@ STATUS=$(awk '/^---$/{c++;next} c==1 && /^status:/{print $2; exit}' "$BRIEF_PATH
 SIGNAL=$(awk '/^---$/{c++;next} c==1 && /^completion_signal:/{print $2; exit}' "$BRIEF_PATH")
 SIZE=$(awk '{for(i=1;i<=NF;i++) if($i ~ /^(brief|raw|saved)=/) printf "%s ", $i}' "$ERRLOG")
 rm -f "$ERRLOG"
+
+# Carry the task list too, so /hand:on can restore the todo graph (blockedBy
+# edges included) alongside the brief. Strictly best-effort: the brief is the
+# primary artifact and a task-export failure must never turn a successful
+# HANDOFF_OK into an error.
+TASKS=$(cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli tasks \
+          export "$SID" 2>/dev/null | head -1)
+case "$TASKS" in
+  HANDTASKS_OK*) TASKS="exported ($(printf '%s' "$TASKS" | tr ' ' '\n' | grep '^tasks=' | cut -d= -f2) tasks)";;
+  HANDTASKS_EMPTY*) TASKS="none in this session";;
+  *) TASKS="skipped";;
+esac
+
 echo "HANDOFF_OK"
 echo "  recap:      $RECAP"
 echo "  session_id: $SID"
 echo "  brief:      $BRIEF_PATH"
 echo "  size:       $SIZE"
 echo "  status:     $STATUS ($SIGNAL)"
+echo "  tasks:      $TASKS"
 echo "  db:         ~/.claude/compaction/sessions.db (row upserted)"
 echo
 case "$STATUS" in
