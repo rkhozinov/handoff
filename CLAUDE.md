@@ -32,8 +32,23 @@ regression — fix the filter, don't relax the invariant.
   used by bench/report stats only).
 - `handoff/trim.py` — `render_brief(entries, sid, cwd, archive_hash)`.
   `build_convo` exposed for the report's audit panel.
-- `handoff/cli.py` — orchestrator: load_jsonl → archive → render → write
-  → upsert DB row.
+- `handoff/cli.py` — orchestrator: load_jsonl → archive → prune → render →
+  write → upsert DB row.
+- `handoff/archive.py` — trims the transcript and stores it as a
+  `session-archive` memory doc, then prunes old ones. `/hand:off` is the only
+  producer of these (~12/day) and nothing removed them, so the doc store had
+  reached 689 archives / 52.9 MB. `prune_archives()` deletes archives older
+  than `days` (30) unless their brief is still open, and an open brief only
+  counts while it has been touched within `open_days` (90) — `in_progress` is
+  set by `/hand:on` and cleared only by `/hand:done`, so it never decays on its
+  own, and treating it as permanent protection would pin 56% of archives
+  forever. Liveness is `last_resumed` falling back to `created`.
+  `maybe_prune_archives()` runs on the `/hand:off` path, throttled to once a
+  day and capped at 50 deletions per run (each `memory doc delete` is a ~0.94s
+  cold CLI spawn), and swallows every error — the archive is already written by
+  then, and losing a handoff to housekeeping would be a bad trade. Deletions
+  are soft, with memory's 30-day purge window as the undo.
+  Manual: `hand prune-archives --dry-run [--days N] [--open-days N]`.
 - `handoff/db.py` — SQLite session index (`~/.claude/compaction/sessions.db`,
   WAL, one row per session: all frontmatter fields + trimmed `body`).
   `connect`/`upsert_session`/`get_session`/`list_sessions`/`search_sessions`/

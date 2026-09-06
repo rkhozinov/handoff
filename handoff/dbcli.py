@@ -168,6 +168,20 @@ def _cmd_done(args) -> int:
     return 0 if ok else 1
 
 
+def _cmd_prune_archives(args) -> int:
+    from handoff.archive import prune_archives
+
+    stats = prune_archives(
+        days=args.days,
+        dry_run=args.dry_run,
+        db_path=args.db,
+        limit=args.limit,
+        open_days=args.open_days,
+    )
+    print(json.dumps(stats, indent=2))
+    return 1 if stats.get("error") else 0
+
+
 def _cmd_on(args) -> int:
     rc = 0
     for sid in args.sid:
@@ -584,6 +598,22 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--reopen", action="store_true")
     _add_db_args(pd)
     pd.set_defaults(func=_cmd_done)
+
+    pp = sub.add_parser(
+        "prune-archives",
+        help="Delete session-archive docs older than N days whose brief is finished",
+    )
+    pp.add_argument("--days", type=int, default=30, help="Retention window (default 30)")
+    pp.add_argument("--dry-run", action="store_true", help="Report what would go, delete nothing")
+    pp.add_argument("--limit", type=int, default=None, help="Cap deletions this run")
+    pp.add_argument(
+        "--open-days",
+        type=int,
+        default=90,
+        help="How long an open brief keeps its archive after it was last touched (default 90)",
+    )
+    _add_db_args(pp)
+    pp.set_defaults(func=_cmd_prune_archives)
 
     po = sub.add_parser("on", help="Mark a brief resumed (status+last_resumed)")
     po.add_argument("sid", nargs="+", help="one or more session ids")

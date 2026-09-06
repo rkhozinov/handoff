@@ -223,3 +223,172 @@ def test_archive_body_file_cleaned_up(tiny_jsonl, marker_home):
 def test_compute_body_hash_stable():
     assert compute_body_hash("hello") == compute_body_hash("hello")
     assert compute_body_hash("a") != compute_body_hash("b")
+
+
+# --- prune_archives -------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from handoff import db as handoff_db  # noqa: E402
+from handoff.archive import prune_archives  # noqa: E402
+
+
+def _iso(days_ago: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+
+
+def _doc(h: str, days_ago: float) -> dict:
+    return {"content_hash": h, "created_at": _iso(days_ago), "doc_type": "session-archive"}
+
+
+@pytest.fixture
+def sessions_db(tmp_path: Path) -> Path:
+    """A sessions DB with one open brief and one finished one, each pointing
+    at an archive."""
+    p = tmp_path / "sessions.db"
+    with handoff_db.connect(p) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, status, archive_hash, created) VALUES (?, ?, ?, ?)",
+            ("open-sid", "in_progress", "hash-open", _iso(1)),
+        )
+        conn.execute(
+            "INSERT INTO sessions (session_id, status, archive_hash, created) VALUES (?, ?, ?, ?)",
+            ("done-sid", "done", "hash-done", _iso(1)),
+        )
+        # Open on paper, untouched since long before any open_days window.
+        conn.execute(
+            "INSERT INTO sessions (session_id, status, archive_hash, created) VALUES (?, ?, ?, ?)",
+            ("stale-sid", "in_progress", "hash-stale", _iso(400)),
+        )
+        conn.commit()
+    return p
+
+
+def _run_prune(docs, sessions_db, **kwargs):
+    """Drive prune_archives with a stubbed `memory` CLI. Returns (stats, deleted)."""
+    deleted: list[str] = []
+
+    def fake_run(cmd, **_kw):
+        if cmd[1:3] == ["doc", "list"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"documents": docs}), stderr="")
+        if cmd[1:3] == ["doc", "delete"]:
+            deleted.append(cmd[3])
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("handoff.archive._memory_bin", return_value=FAKE_BIN), \
+         patch("handoff.archive.subprocess.run", side_effect=fake_run):
+        stats = prune_archives(db_path=sessions_db, **kwargs)
+    return stats, deleted
+
+
+def test_prune_deletes_only_old_finished_archives(sessions_db):
+    docs = [_doc("hash-done", 90), _doc("hash-orphan", 90)]
+
+    stats, deleted = _run_prune(docs, sessions_db, days=30)
+
+    assert sorted(deleted) == ["hash-done", "hash-orphan"]
+    assert stats["deleted"] == 2
+
+
+def test_prune_keeps_archives_of_briefs_that_are_open_and_recently_touched(sessions_db):
+    stats, deleted = _run_prune([_doc("hash-open", 400)], sessions_db, days=30)
+
+    assert deleted == []
+    assert stats["kept_open"] == 1
+
+
+def test_prune_deletes_archives_of_briefs_open_but_long_abandoned(sessions_db):
+    """`in_progress` is set by /hand:on and only cleared by /hand:done, so it
+    never decays. A brief untouched for longer than open_days is abandoned."""
+    stats, deleted = _run_prune([_doc("hash-stale", 400)], sessions_db, days=30, open_days=90)
+
+    assert deleted == ["hash-stale"]
+
+
+def test_open_days_can_be_widened_to_protect_an_abandoned_brief(sessions_db):
+    stats, deleted = _run_prune([_doc("hash-stale", 400)], sessions_db, days=30, open_days=500)
+
+    assert deleted == []
+    assert stats["kept_open"] == 1
+
+
+def test_last_resumed_beats_created_for_liveness(sessions_db, tmp_path):
+    """A brief created long ago but resumed yesterday is live."""
+    with handoff_db.connect(sessions_db) as conn:
+        conn.execute(
+            "UPDATE sessions SET last_resumed = ? WHERE session_id = 'stale-sid'", (_iso(1),)
+        )
+        conn.commit()
+
+    stats, deleted = _run_prune([_doc("hash-stale", 400)], sessions_db, days=30, open_days=90)
+
+    assert deleted == []
+    assert stats["kept_open"] == 1
+
+
+def test_prune_keeps_recent_archives(sessions_db):
+    stats, deleted = _run_prune([_doc("hash-done", 5)], sessions_db, days=30)
+
+    assert deleted == []
+    assert stats["kept_recent"] == 1
+
+
+def test_prune_keeps_a_doc_whose_timestamp_is_unreadable(sessions_db):
+    """An unparseable created_at is not evidence that the doc is old."""
+    stats, deleted = _run_prune([{"content_hash": "hash-weird", "created_at": "not-a-date"}], sessions_db, days=30)
+
+    assert deleted == []
+    assert stats["kept_recent"] == 1
+
+
+def test_prune_dry_run_deletes_nothing(sessions_db):
+    stats, deleted = _run_prune([_doc("hash-done", 90)], sessions_db, days=30, dry_run=True)
+
+    assert deleted == []
+    assert stats["deleted"] == 1
+
+
+def test_prune_keeps_everything_when_the_sessions_db_is_unreadable(tmp_path):
+    """Losing the sessions DB must not turn into deleting every archive."""
+    with patch("handoff.archive._memory_bin", return_value=FAKE_BIN), \
+         patch("handoff.archive._open_archive_hashes", side_effect=OSError("boom")):
+        stats = prune_archives(db_path=tmp_path / "missing.db")
+
+    assert stats["deleted"] == 0
+    assert "error" in stats
+
+
+def test_prune_stops_at_the_limit_and_reports_the_rest_deferred(sessions_db):
+    docs = [_doc(f"hash-{i}", 90) for i in range(5)]
+
+    stats, deleted = _run_prune(docs, sessions_db, days=30, limit=2)
+
+    assert len(deleted) == 2
+    assert stats["deleted"] == 2
+    assert stats["deferred"] == 3
+
+
+def test_auto_prune_is_throttled_to_once_a_day(marker_home, tmp_path):
+    from handoff.archive import AUTO_PRUNE_INTERVAL_SEC, maybe_prune_archives
+
+    stamp = tmp_path / ".claude" / "memory" / "state" / "prune-archives.stamp"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("{}", encoding="utf-8")
+
+    with patch("handoff.archive.prune_archives") as pruner:
+        assert maybe_prune_archives() is None
+        pruner.assert_not_called()
+
+        # Past the window, it runs.
+        pruner.return_value = {"deleted": 0}
+        assert maybe_prune_archives(now=stamp.stat().st_mtime + AUTO_PRUNE_INTERVAL_SEC + 1) == {"deleted": 0}
+
+
+def test_auto_prune_swallows_failures(marker_home):
+    """The archive is already written by this point; housekeeping must not
+    turn a successful /hand:off into a failed one."""
+    from handoff.archive import maybe_prune_archives
+
+    with patch("handoff.archive.prune_archives", side_effect=RuntimeError("boom")):
+        assert maybe_prune_archives() is None
