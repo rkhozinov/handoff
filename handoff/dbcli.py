@@ -13,14 +13,17 @@ import json
 import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 from handoff import db, tasks
 from handoff.fsutil import atomic_write
 from handoff.extract import extract_title, load_jsonl
 from handoff.lifecycle import (
+    is_due,
     now_iso,
     parse_frontmatter,
+    parse_hold_until,
     render_frontmatter,
     strip_frontmatter,
 )
@@ -33,6 +36,7 @@ _BADGES = {
     "pending": "? pending    ",
     "in_progress": "… in_progress",
     "archived": "▣ archived   ",
+    "on_hold": "⏸ on_hold    ",
 }
 
 
@@ -123,6 +127,46 @@ def do_archive(sid: str, *, unarchive: bool, compaction_dir: str, db_path=None) 
     return True, f"HANDARCH_OK action={action} sid={sid} status={status}"
 
 
+def do_hold(
+    sid: str, *, note: str | None, until: str | None, release: bool,
+    compaction_dir: str, db_path=None,
+) -> tuple[bool, str]:
+    """Shelve a session on hold (status `on_hold`, optional note/deadline) or
+    release it back to `in_progress`, in both the file and the DB."""
+    try:
+        p = _brief_path(sid, compaction_dir)
+    except ValueError as e:
+        return False, f"HANDHOLD_ERROR {e}"
+    if not p.is_file():
+        return False, f"HANDHOLD_ERROR no brief at {p}"
+    fm, body = _read_split(p)
+    if not fm:
+        return False, "HANDHOLD_ERROR brief has no frontmatter"
+
+    if release:
+        fm["status"] = "in_progress"
+        fm["completion_signal"] = "manual"
+        fm["hold_until"] = None
+        _write_brief(p, fm, body)
+        with db.connect(db_path) as conn:
+            db.set_hold(conn, sid, status="in_progress", signal="manual",
+                        note=fm.get("hold_note"), until=fm.get("hold_until"))
+        return True, f"HANDHOLD_OK action=released sid={sid}"
+
+    if until is not None and parse_hold_until(until) is None:
+        return False, f"HANDHOLD_ERROR reason=bad-date until={until!r} (want YYYY-MM-DD)"
+    fm["status"] = "on_hold"
+    fm["completion_signal"] = "manual"
+    if note:
+        fm["hold_note"] = note
+    fm["hold_until"] = until
+    _write_brief(p, fm, body)
+    with db.connect(db_path) as conn:
+        db.set_hold(conn, sid, status="on_hold", signal="manual",
+                    note=fm.get("hold_note"), until=fm.get("hold_until"))
+    return True, f"HANDHOLD_OK action=held sid={sid} until={fm.get('hold_until')}"
+
+
 def do_rename(sid: str, title: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str]:
     """Set a session's title in both the brief frontmatter and the DB row."""
     title = (title or "").strip()
@@ -166,6 +210,9 @@ def do_resume(sid: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str
     ts = now_iso()
     fm["status"] = "in_progress"
     fm["last_resumed"] = ts
+    # Resuming releases a hold; db.set_resumed already clears hold_until on
+    # the DB row, the file must agree.
+    fm["hold_until"] = None
     _write_brief(p, fm, body)
     with db.connect(db_path) as conn:
         db.set_resumed(conn, sid, status="in_progress", last_resumed=ts)
@@ -242,6 +289,36 @@ def _cmd_archive(args) -> int:
     return 0 if ok else 1
 
 
+def _cmd_hold(args) -> int:
+    ok, msg = do_hold(
+        args.sid, note=args.note, until=args.until, release=args.release,
+        compaction_dir=args.dir, db_path=args.db,
+    )
+    print(msg)
+    return 0 if ok else 1
+
+
+def _cmd_holds(args) -> int:
+    with db.connect(args.db) as conn:
+        rows = db.list_holds(conn)
+    today = date.today()
+    if args.due:
+        rows = [r for r in rows if is_due(r, today=today)]
+    for r in rows:
+        sid = r["session_id"]
+        due = r.get("hold_until")
+        mark = "⏰" if is_due(r, today=today) else "⏸"
+        head = f"{mark} {sid[:8]}"
+        if due:
+            head += f"  due {due}"
+        print(f"{head}  {r.get('title') or r.get('recap') or ''}")
+        if r.get("hold_note"):
+            print(f"    note:   {r['hold_note']}")
+        print(f"    resume: cd {r.get('cwd') or '.'} && claude --resume {sid}   |  /hand:on {sid}")
+        print()
+    return 0
+
+
 def _cmd_unarchive(args) -> int:
     ok, msg = do_archive(
         args.sid, unarchive=True, compaction_dir=args.dir, db_path=args.db
@@ -272,7 +349,7 @@ def _cmd_list(args) -> int:
         print(f"(cwd={cwd} — pass --any-cwd to widen)")
     print()
 
-    counts = {"pending": 0, "in_progress": 0, "done": 0, "archived": 0}
+    counts = {"pending": 0, "in_progress": 0, "done": 0, "archived": 0, "on_hold": 0}
     for r in rows:
         status = r.get("status") or "?"
         counts[status] = counts.get(status, 0) + 1
@@ -289,7 +366,8 @@ def _cmd_list(args) -> int:
         f"\n  pending: {counts.get('pending', 0)}  "
         f"in_progress: {counts.get('in_progress', 0)}  "
         f"done: {counts.get('done', 0)}  "
-        f"archived: {counts.get('archived', 0)}"
+        f"archived: {counts.get('archived', 0)}  "
+        f"on_hold: {counts.get('on_hold', 0)}"
     )
     return 0
 
@@ -674,6 +752,19 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--unarchive", action="store_true", help="Restore instead")
     _add_db_args(pa)
     pa.set_defaults(func=_cmd_archive)
+
+    ph = sub.add_parser("hold", help="Shelve a session on hold (or --release)")
+    ph.add_argument("sid")
+    ph.add_argument("--note", default=None, help="Why it's on hold")
+    ph.add_argument("--until", default=None, help="Resume-by date, YYYY-MM-DD")
+    ph.add_argument("--release", action="store_true", help="Release back to in_progress")
+    _add_db_args(ph)
+    ph.set_defaults(func=_cmd_hold)
+
+    phs = sub.add_parser("holds", help="List on_hold sessions, due-first")
+    phs.add_argument("--due", action="store_true", help="Only sessions due to resume")
+    _add_db_args(phs)
+    phs.set_defaults(func=_cmd_holds)
 
     pua = sub.add_parser("unarchive", help="Restore an archived session")
     pua.add_argument("sid")

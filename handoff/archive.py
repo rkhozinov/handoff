@@ -28,7 +28,10 @@ from handoff.transcript import trim_transcript
 # `done` and `archived` briefs are finished work, and a session row that no
 # longer exists (the pre-1.0 auto-archive hook wrote archives for every session,
 # with no brief at all) has nothing pointing at it.
-OPEN_STATUSES = frozenset({"pending", "in_progress"})
+OPEN_STATUSES = frozenset({"pending", "in_progress", "on_hold"})
+# An explicit hold is the user saying "I will come back" — it never ages out
+# of protection the way an abandoned in_progress does.
+ALWAYS_KEEP_STATUSES = frozenset({"on_hold"})
 
 DEFAULT_RETENTION_DAYS = 30
 
@@ -157,13 +160,16 @@ def _open_archive_hashes(
     placeholders = ",".join("?" * len(OPEN_STATUSES))
     with _db.connect(db_path) as conn:
         rows = conn.execute(
-            f"SELECT archive_hash, created, last_resumed FROM sessions "
+            f"SELECT archive_hash, status, created, last_resumed FROM sessions "
             f"WHERE archive_hash IS NOT NULL AND status IN ({placeholders})",
             tuple(sorted(OPEN_STATUSES)),
         ).fetchall()
 
     keep = set()
     for r in rows:
+        if r["status"] in ALWAYS_KEEP_STATUSES:
+            keep.add(r["archive_hash"])
+            continue
         touched = r["last_resumed"] or r["created"]
         try:
             ts = datetime.fromisoformat(str(touched).replace("Z", "+00:00")).timestamp()

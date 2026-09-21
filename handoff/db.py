@@ -43,6 +43,8 @@ _FM_COLUMNS = (
     "archive_hash",
     "recap",
     "recap_source",
+    "hold_note",
+    "hold_until",
 )
 COLUMNS = _FM_COLUMNS + ("body", "tokens", "brief_path", "indexed_at")
 
@@ -61,6 +63,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     archive_hash      TEXT,
     recap             TEXT,
     recap_source      TEXT,
+    hold_note         TEXT,
+    hold_until        TEXT,
     body              TEXT,
     tokens            INTEGER,
     brief_path        TEXT,
@@ -73,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_cwd     ON sessions(cwd);
 
 # Columns added after the initial schema — applied as best-effort ALTERs so
 # pre-existing DBs migrate in place (CREATE TABLE IF NOT EXISTS won't add them).
-_MIGRATIONS = (("tokens", "INTEGER"),)
+_MIGRATIONS = (("tokens", "INTEGER"), ("hold_note", "TEXT"), ("hold_until", "TEXT"))
 
 
 def db_path(path: str | os.PathLike[str] | None = None) -> Path:
@@ -233,14 +237,45 @@ def set_resumed(
     status: str,
     last_resumed: str,
 ) -> bool:
-    """UPDATE status + last_resumed + indexed_at (for /hand:on). Returns True if
-    a row matched."""
+    """UPDATE status + last_resumed + indexed_at (for /hand:on). Resuming a
+    held brief releases it, so `hold_until` is cleared too (the note stays
+    as history). Returns True if a row matched."""
     cur = conn.execute(
-        "UPDATE sessions SET status = ?, last_resumed = ?, indexed_at = ? "
-        "WHERE session_id = ?",
+        "UPDATE sessions SET status = ?, last_resumed = ?, hold_until = NULL, "
+        "indexed_at = ? WHERE session_id = ?",
         (status, last_resumed, now_iso(), sid),
     )
     return cur.rowcount > 0
+
+
+def set_hold(
+    conn: sqlite3.Connection,
+    sid: str,
+    *,
+    status: str,
+    signal: str,
+    note: str | None,
+    until: str | None,
+) -> bool:
+    """UPDATE status/signal + hold_note/hold_until in one statement (for
+    `hand hold` and its release path). Returns True if a row matched."""
+    cur = conn.execute(
+        "UPDATE sessions SET status = ?, completion_signal = ?, hold_note = ?, "
+        "hold_until = ?, indexed_at = ? WHERE session_id = ?",
+        (status, signal, note, until, now_iso(), sid),
+    )
+    return cur.rowcount > 0
+
+
+def list_holds(conn: sqlite3.Connection) -> list[dict]:
+    """Every `on_hold` row across all cwds, soonest deadline first, undated
+    holds last, then newest-created first."""
+    cols = ", ".join(_LIST_COLUMNS)
+    cur = conn.execute(
+        f"SELECT {cols} FROM sessions WHERE status = 'on_hold' "
+        "ORDER BY hold_until IS NULL, hold_until ASC, created DESC"
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 def delete_session(conn: sqlite3.Connection, sid: str) -> bool:

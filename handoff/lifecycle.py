@@ -21,7 +21,7 @@ second JSONL pass is needed.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -33,7 +33,7 @@ from handoff.extract import (
     user_text,
 )
 
-Status = Literal["pending", "in_progress", "done"]
+Status = Literal["pending", "in_progress", "done", "archived", "on_hold"]
 Signal = Literal[
     "auto-todowrite",
     "auto-user-msg",
@@ -234,7 +234,14 @@ FRONTMATTER_KEYS = (
     "archive_hash",
     "recap",
     "recap_source",
+    # on_hold shelf (see `is_due`); both null unless the brief has been held.
+    "hold_note",
+    "hold_until",
 )
+
+# Statuses a manual decision pins across /hand:off re-runs. `on_hold` is
+# here so a later snapshot never auto-revives a parked session.
+STICKY_MANUAL_STATUSES = ("done", "archived", "on_hold")
 
 
 def now_iso() -> str:
@@ -339,6 +346,28 @@ def is_stale(
     return age.days >= days
 
 
+def parse_hold_until(s: str | None) -> date | None:
+    """`hold_until` is a bare `YYYY-MM-DD`; anything else → None (never
+    raise on a hand-edited brief)."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(str(s).strip())
+    except ValueError:
+        return None
+
+
+def is_due(fm: dict[str, str | None], *, today: date | None = None) -> bool:
+    """A held brief whose `hold_until` is today or earlier. Only `on_hold`
+    counts — a released brief keeps `hold_note` as history but never nags."""
+    if fm.get("status") != "on_hold":
+        return False
+    until = parse_hold_until(fm.get("hold_until"))
+    if until is None:
+        return False
+    return until <= (today or datetime.now(timezone.utc).date())
+
+
 def mark_stale(fm: dict[str, str | None]) -> dict[str, str | None]:
     """Return a copy of `fm` with status flipped to `done` and
     `completion_signal: auto-stale`. Caller owns persistence."""
@@ -393,6 +422,10 @@ def resolve_frontmatter(
         "last_resumed": existing.get("last_resumed"),
         "archive_hash": archive_hash,
         "title": title or existing.get("title"),
+        # Hold metadata is set only by `hand hold`; the detector never
+        # produces it, so carry it through verbatim.
+        "hold_note": existing.get("hold_note"),
+        "hold_until": existing.get("hold_until"),
     }
 
     llm_recap = sanitize_recap(recap)
@@ -414,7 +447,7 @@ def resolve_frontmatter(
 
     if (
         existing.get("completion_signal") == "manual"
-        and existing.get("status") in ("done", "archived")
+        and existing.get("status") in STICKY_MANUAL_STATUSES
     ):
         out["status"] = existing["status"]
         out["completion_signal"] = "manual"
