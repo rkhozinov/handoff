@@ -43,12 +43,11 @@ DEFAULT_RETENTION_DAYS = 30
 # An open brief keeps its archive until it has been untouched this long.
 DEFAULT_OPEN_DAYS = 90
 
-# Each `memory doc delete` is a cold CLI spawn, ~0.94s. The auto-prune runs on
-# the /hand:off path, so it deletes at most this many per run and drains the
-# backlog over several days rather than blocking one handoff for minutes.
-# Steady state is ~12 archives/day, well under the cap.
-AUTO_PRUNE_LIMIT = 50
-AUTO_PRUNE_INTERVAL_SEC = 24 * 3600
+# Pruning is MANUAL only (`hand prune-archives --apply`). It used to run
+# automatically on every /hand:off, throttled to once a day; removed
+# 2026-09-21 — nothing deletes without a user-issued command, because a
+# wrong retention guess costs real work and the user cannot review what an
+# automatic pass removed.
 
 
 def _marker_path(session_id: str) -> Path:
@@ -271,34 +270,3 @@ def prune_archives(
     stats["open_days"] = open_days
     stats["dry_run"] = dry_run
     return stats
-
-
-def _prune_stamp() -> Path:
-    return Path.home() / ".claude" / "memory" / "state" / "prune-archives.stamp"
-
-
-def maybe_prune_archives(now: float | None = None) -> dict | None:
-    """Run the prune at most once a day, and never let it break a /hand:off.
-
-    Returns the prune stats, or None when throttled or when anything went
-    wrong — the archive has already been written by this point and losing it
-    to a housekeeping error would be a bad trade.
-    """
-    stamp = _prune_stamp()
-    now = now if now is not None else datetime.now(timezone.utc).timestamp()
-    try:
-        if stamp.exists() and now - stamp.stat().st_mtime < AUTO_PRUNE_INTERVAL_SEC:
-            return None
-    except OSError:
-        return None
-    try:
-        # Stamp FIRST: two /hand:off runs on the stamp day would otherwise
-        # both pass the throttle and both spawn the ~1s-per-doc deletes.
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text("{}", encoding="utf-8")
-        stats = prune_archives(limit=AUTO_PRUNE_LIMIT)
-        stamp.write_text(json.dumps(stats), encoding="utf-8")
-        return stats
-    except Exception as e:  # housekeeping must never fail the handoff
-        sys.stderr.write(f"[prune] skipped: {e}\n")
-        return None

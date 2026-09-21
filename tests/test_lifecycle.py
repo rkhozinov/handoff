@@ -11,7 +11,6 @@ from handoff.lifecycle import (
     detect_status,
     extract_recap,
     is_stale,
-    mark_stale,
     parse_frontmatter,
     read_existing_brief,
     render_frontmatter,
@@ -399,7 +398,7 @@ class TestResolveRecap:
 
 
 # ---------------------------------------------------------------------------
-# is_stale / mark_stale
+# is_stale
 # ---------------------------------------------------------------------------
 
 NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -477,18 +476,3 @@ class TestStale:
         fm = _fm("in_progress")
         fm["created"] = "not a date"
         assert not is_stale(fm, now=NOW)
-
-    def test_mark_stale_returns_done(self):
-        fm = _fm("in_progress", created=NOW - timedelta(days=20))
-        new = mark_stale(fm)
-        assert new["status"] == "done"
-        assert new["completion_signal"] == "auto-stale"
-        # Original untouched
-        assert fm["status"] == "in_progress"
-
-    def test_mark_stale_preserves_other_fields(self):
-        fm = _fm("in_progress", created=NOW - timedelta(days=20))
-        fm["archive_hash"] = "deadbeef"
-        new = mark_stale(fm)
-        assert new["archive_hash"] == "deadbeef"
-        assert new["session_id"] == "x"

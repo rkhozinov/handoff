@@ -118,7 +118,7 @@ session_id: <sid>
 cwd: <abs path>
 created: <iso8601>
 last_resumed: <iso8601 or null>
-completion_signal: auto-todowrite | auto-user-msg | auto-open-q | auto-default | manual | auto-stale
+completion_signal: auto-todowrite | auto-user-msg | auto-open-q | auto-default | manual
 archive_hash: <memory doc hash>
 recap: Goal: cut portal latency. LCP 3054→2202ms shipped. Next: merge PR #2511.
 recap_source: llm         # llm (composed by /hand:off) | extracted (fallback)
@@ -128,8 +128,8 @@ recap_source: llm         # llm (composed by /hand:off) | extracted (fallback)
 - **status** is detected from the transcript (TodoWrite state, completion
   language in the last user messages, open questions). Conservative bias:
   uncertain → `in_progress`, never `done`. `/hand:done <sid>` flips it
-  manually (sticky); `scripts/sweep_stale.py` auto-closes briefs idle
-  longer than 14 days.
+  manually (sticky). Nothing auto-closes or auto-deletes: `hand review`
+  lists idle briefs and you decide per row.
 - **recap** is the one LLM-composed field: `/hand:off` writes a 1–2
   sentence `Goal → current → next` line and passes it via `--recap`.
   Direct CLI runs fall back to deterministic extraction (first signal

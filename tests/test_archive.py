@@ -369,26 +369,4 @@ def test_prune_stops_at_the_limit_and_reports_the_rest_deferred(sessions_db):
     assert stats["deferred"] == 3
 
 
-def test_auto_prune_is_throttled_to_once_a_day(marker_home, tmp_path):
-    from handoff.archive import AUTO_PRUNE_INTERVAL_SEC, maybe_prune_archives
 
-    stamp = tmp_path / ".claude" / "memory" / "state" / "prune-archives.stamp"
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text("{}", encoding="utf-8")
-
-    with patch("handoff.archive.prune_archives") as pruner:
-        assert maybe_prune_archives() is None
-        pruner.assert_not_called()
-
-        # Past the window, it runs.
-        pruner.return_value = {"deleted": 0}
-        assert maybe_prune_archives(now=stamp.stat().st_mtime + AUTO_PRUNE_INTERVAL_SEC + 1) == {"deleted": 0}
-
-
-def test_auto_prune_swallows_failures(marker_home):
-    """The archive is already written by this point; housekeeping must not
-    turn a successful /hand:off into a failed one."""
-    from handoff.archive import maybe_prune_archives
-
-    with patch("handoff.archive.prune_archives", side_effect=RuntimeError("boom")):
-        assert maybe_prune_archives() is None

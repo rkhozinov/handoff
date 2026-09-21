@@ -39,7 +39,6 @@ Signal = Literal[
     "auto-user-msg",
     "auto-open-q",
     "auto-default",
-    "auto-stale",
     "manual",
     "backfill",
 ]
@@ -323,10 +322,11 @@ def is_stale(
     now: datetime | None = None,
     days: int = STALE_DAYS_DEFAULT,
 ) -> bool:
-    """A brief is stale when it's still `pending` or `in_progress` AND the
+    """A brief is idle when it's still `pending` or `in_progress` AND the
     most-recent activity timestamp (`last_resumed` if set, else `created`)
-    is older than `days`. Manual statuses (`done` + signal `manual`) are
-    never considered stale — the user's call wins."""
+    is older than `days`. Used by `hand review` to SHOW candidates; nothing
+    acts on it automatically. Manual statuses are never idle — the user's
+    call wins."""
     status = fm.get("status")
     if status not in ("pending", "in_progress"):
         return False
@@ -366,15 +366,6 @@ def is_due(fm: dict[str, str | None], *, today: date | None = None) -> bool:
     if until is None:
         return False
     return until <= (today or datetime.now(timezone.utc).date())
-
-
-def mark_stale(fm: dict[str, str | None]) -> dict[str, str | None]:
-    """Return a copy of `fm` with status flipped to `done` and
-    `completion_signal: auto-stale`. Caller owns persistence."""
-    out = dict(fm)
-    out["status"] = "done"
-    out["completion_signal"] = "auto-stale"
-    return out
 
 
 def read_existing_brief(brief_path: Path) -> dict[str, str | None]:

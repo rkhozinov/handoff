@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from handoff.archive import archive_full_session, maybe_prune_archives
+from handoff.archive import archive_full_session
 from handoff.fsutil import atomic_write
 from handoff.extract import (
     cwd_from_entries,
@@ -122,9 +122,6 @@ def run(args: argparse.Namespace) -> OffResult:
     archive_hash = None
     if not args.no_archive:
         archive_hash = archive_full_session(transcript, args.session_id, cwd)
-        # /hand:off is the only producer of these archives, so it is also where
-        # they get cleaned up. Throttled to once a day and capped per run.
-        maybe_prune_archives()
 
     out_dir = Path(os.path.expanduser(args.out_dir))
     out_dir.mkdir(parents=True, exist_ok=True)

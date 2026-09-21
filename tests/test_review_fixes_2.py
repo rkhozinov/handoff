@@ -1,17 +1,15 @@
-"""Second batch of 2026-09-21 review regressions: trimmer, sweep, cli
+"""Second batch of 2026-09-21 review regressions: trimmer, cli
 ordering, task-id allocation, backfill."""
 from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from handoff import cli, db, tasks
+from handoff import cli, tasks
 from handoff.extract import is_noise_user_msg
-from handoff.lifecycle import parse_frontmatter, render_frontmatter
 from handoff.trim import NARRATION_MAX_CHARS, render_assistant
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,42 +46,8 @@ def test_explicit_acks_are_noise(msg):
     assert is_noise_user_msg(msg) is True
 
 
-# #4 — the sweep updates the DB row it flips.
-def test_sweep_apply_updates_db(tmp_path):
-    import sweep_stale
-
-    d = tmp_path / "c"
-    d.mkdir()
-    fm = {"status": "in_progress", "session_id": SID, "completion_signal": "auto-default",
-          "created": "2026-01-01T00:00:00Z", "cwd": "/x"}
-    (d / f"{SID}.md").write_text(render_frontmatter(fm) + "U: x\n", encoding="utf-8")
-    dbf = tmp_path / "s.db"
-    with db.connect(dbf) as conn:
-        db.upsert_session(conn, fm=fm, body="U: x\n")
-
-    res = sweep_stale.sweep(d, days=14, apply=True, now=datetime(2026, 9, 1, tzinfo=timezone.utc), db_path=dbf)
-    assert res["counts"]["flipped"] == 1
-    assert parse_frontmatter((d / f"{SID}.md").read_text())["status"] == "done"
-    with db.connect(dbf) as conn:
-        row = db.get_session(conn, SID)
-    assert (row["status"], row["completion_signal"]) == ("done", "auto-stale")
 
 
-def test_sweep_dry_run_touches_nothing(tmp_path):
-    import sweep_stale
-
-    d = tmp_path / "c"
-    d.mkdir()
-    fm = {"status": "in_progress", "session_id": SID, "completion_signal": "auto-default",
-          "created": "2026-01-01T00:00:00Z", "cwd": "/x"}
-    (d / f"{SID}.md").write_text(render_frontmatter(fm) + "U: x\n", encoding="utf-8")
-    dbf = tmp_path / "s.db"
-    with db.connect(dbf) as conn:
-        db.upsert_session(conn, fm=fm, body="U: x\n")
-    sweep_stale.sweep(d, days=14, apply=False, now=datetime(2026, 9, 1, tzinfo=timezone.utc), db_path=dbf)
-    assert parse_frontmatter((d / f"{SID}.md").read_text())["status"] == "in_progress"
-    with db.connect(dbf) as conn:
-        assert db.get_session(conn, SID)["status"] == "in_progress"
 
 
 # #10 — a failing agent-report store must not cost the brief.

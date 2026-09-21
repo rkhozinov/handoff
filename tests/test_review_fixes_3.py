@@ -3,8 +3,6 @@ a real failure mode."""
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import patch
 
 from handoff import db, dbcli
 from handoff.lifecycle import parse_frontmatter, render_frontmatter
@@ -70,21 +68,3 @@ def test_do_resume_upserts_row_when_db_has_none(tmp_path):
     with db.connect(dbf) as conn:
         row = db.get_session(conn, SID)
     assert row and row["last_resumed"]
-
-
-# Two same-day /hand:off runs must not both prune: stamp before pruning.
-def test_auto_prune_stamps_before_pruning(tmp_path, monkeypatch):
-    from handoff import archive
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    stamp = archive._prune_stamp()
-    seen = []
-
-    def fake_prune(**kw):
-        seen.append(stamp.exists())
-        return {"deleted": 0}
-
-    with patch("handoff.archive.prune_archives", side_effect=fake_prune):
-        archive.maybe_prune_archives()
-    assert seen == [True]

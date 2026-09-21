@@ -33,7 +33,7 @@ regression — fix the filter, don't relax the invariant.
 - `handoff/trim.py` — `render_brief(entries, sid, cwd, archive_hash)`.
   `build_convo` exposed for the report's audit panel.
 - `handoff/cli.py` — the snapshot pipeline: `run(args) -> OffResult`
-  (load_jsonl → archive → prune → render → atomic write → upsert DB row;
+  (load_jsonl → archive → render → atomic write → upsert DB row;
   brief is written BEFORE the best-effort agent-report store) and a thin
   `main` for direct use. `dbcli.do_off` calls `run` in-process.
 - `handoff/archive.py` — trims the transcript and stores it as a
@@ -45,12 +45,10 @@ regression — fix the filter, don't relax the invariant.
   set by `/hand:on` and cleared only by `/hand:done`, so it never decays on its
   own, and treating it as permanent protection would pin 56% of archives
   forever. Liveness is `last_resumed` falling back to `created`.
-  `maybe_prune_archives()` runs on the `/hand:off` path, throttled to once a
-  day and capped at 50 deletions per run (each `memory doc delete` is a ~0.94s
-  cold CLI spawn), and swallows every error — the archive is already written by
-  then, and losing a handoff to housekeeping would be a bad trade. Deletions
-  are soft, with memory's 30-day purge window as the undo.
-  Manual: `hand prune-archives --dry-run [--days N] [--open-days N]`.
+  Pruning is MANUAL: `hand prune-archives [--days N] [--open-days N]` reports;
+  `--apply` deletes (soft — memory's 30-day purge window is the undo). It
+  used to run automatically on every `/hand:off` (`maybe_prune_archives`,
+  daily throttle, 50/run); removed 2026-09-21 under the ground rule below.
 - `handoff/db.py` — SQLite session index (`~/.claude/compaction/sessions.db`,
   WAL, one row per session: all frontmatter fields + trimmed `body`).
   `connect`/`upsert_session`/`get_session`/`list_sessions`/`search_sessions`/
@@ -281,8 +279,8 @@ TUI icons — keys on status.
 - `/hand:on <sid>` releases a hold: status → `in_progress`, `hold_until`
   cleared, `hold_note` kept as history. `hand hold <sid> --release` does the
   same without restoring.
-- Held briefs are exempt from `scripts/sweep_stale.py` (status gate) and
-  their archives are kept by `prune_archives` regardless of `open_days`
+- Held briefs never show up in `hand review` (status gate) and their
+  archives are kept by `prune_archives` regardless of `open_days`
   (`ALWAYS_KEEP_STATUSES`) — an explicit hold is the user saying "I will
   come back".
 - `extract_title` prefers the LAST `custom-title` entry (user-set via
@@ -334,29 +332,20 @@ frontmatter (run it first); then `dbcli rebuild` indexes them. Backfill
 only reads the rendered brief body (no JSONL), so the TodoWrite signal
 isn't available; it's conservative.
 
-## Auto-stale sweep
+## Ground rule: nothing changes status or deletes without a user command
 
-`scripts/sweep_stale.py` flips `pending`/`in_progress` → `done` (signal
-`auto-stale`) when the most-recent activity (`last_resumed` if set, else
-`created`) is older than `--days` (default `STALE_DAYS_DEFAULT = 14`).
-Manual statuses are never touched — including a manual `in_progress` from
-`/hand:done --reopen` (`is_stale` checks `completion_signal`; before
-2026-09-21 it didn't and the sweep undid reopens). The sweep updates the
-DB row in the same run (`--db` to override).
+No code path flips a brief's status, deletes a brief, or deletes an archive
+unless the user issued the command or pressed the key. `/hand:off` only
+classifies its OWN session (the detector, conservative bias) and never
+touches other briefs. Rejected under this rule on 2026-09-21: the
+`scripts/sweep_stale.py` auto-close (idle > 14 d → `done`, was cron-able)
+and the automatic archive prune on the `/hand:off` path. Reason: a false
+positive silently costs real work and the user cannot review what an
+automatic pass did. Idle briefs are surfaced for a human decision by
+`hand review` (see "Review") instead.
 
-```bash
-PYTHONPATH=. python3 scripts/sweep_stale.py              # dry-run
-PYTHONPATH=. python3 scripts/sweep_stale.py --apply
-PYTHONPATH=. python3 scripts/sweep_stale.py --days 30 --apply
-```
-
-Cron-able for hands-off hygiene:
-```
-0 6 * * *  cd ~/repos/handoff && PYTHONPATH=. python3 scripts/sweep_stale.py --apply
-```
-
-Reversible: `/hand:done <sid> --reopen` revives a brief with a manual
-signal, which is sticky — auto-stale won't re-close it.
+`is_stale(fm, days)` remains as the idle predicate `hand review` uses to
+list candidates; nothing acts on it.
 
 ## Known follow-ups (not blocking)
 

@@ -456,7 +456,7 @@ def _cmd_prune_archives(args) -> int:
 
     stats = prune_archives(
         days=args.days,
-        dry_run=args.dry_run,
+        dry_run=not args.apply,
         db_path=args.db,
         limit=args.limit,
         open_days=args.open_days,
@@ -944,10 +944,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     pp = sub.add_parser(
         "prune-archives",
-        help="Delete session-archive docs older than N days whose brief is finished",
+        help="Report (or with --apply delete) session-archive docs older than N days whose brief is finished",
     )
     pp.add_argument("--days", type=int, default=30, help="Retention window (default 30)")
-    pp.add_argument("--dry-run", action="store_true", help="Report what would go, delete nothing")
+    pp.add_argument("--apply", action="store_true", help="Actually delete (default: report only)")
     pp.add_argument("--limit", type=int, default=None, help="Cap deletions this run")
     pp.add_argument(
         "--open-days",
