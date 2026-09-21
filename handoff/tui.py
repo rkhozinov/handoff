@@ -28,7 +28,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from handoff import db, dbcli
+from handoff import db, dbcli, lifecycle
 
 # Above this body size, full-markdown render costs too much even via Rich;
 # render the head styled + a note. Covers the rare giant brief (p99 ~100KB).
@@ -40,6 +40,7 @@ _STATUS_ICON = {
     "in_progress": "[yellow]◐[/]",  # half — active
     "done": "[green]●[/]",        # full — complete
     "archived": "[blue]▣[/]",     # boxed — shelved
+    "on_hold": "[yellow]⏸[/]",    # paused — parked
 }
 _EMPTY = "No sessions — run `/hand:off` or `hand rebuild`."
 
@@ -66,7 +67,7 @@ def _fmt_tokens(n) -> str:
 
 def _item_text(row: dict) -> str:
     status = row.get("status") or "?"
-    icon = _STATUS_ICON.get(status, "[dim]·[/]")
+    icon = "[red]⏰[/]" if lifecycle.is_due(row) else _STATUS_ICON.get(status, "[dim]·[/]")
     date = (row.get("created") or "").split("T")[0] or "?"
     title = escape(_display_title(row))
     meta = f"{date} · ~{_fmt_tokens(row.get('tokens'))} tok"
@@ -113,9 +114,46 @@ def _fuzzy_score(query: str, text: str) -> int | None:
     return score
 
 
+class PromptScreen(ModalScreen[str]):
+    """Centered input modal. Dismisses with the entered text, or None on
+    cancel (esc)."""
+
+    CSS = """
+    PromptScreen { align: center middle; }
+    #box {
+        width: 70; height: auto; padding: 1 2;
+        background: $surface; border: thick $accent;
+    }
+    #box Static { padding-bottom: 1; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, label: str, current: str):
+        super().__init__()
+        self._label = label
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="box"):
+            yield Static(f"{self._label}  ([dim]enter[/] save · [dim]esc[/] cancel)")
+            yield Input(value=self._current, id="prompt-input")
+
+    def on_mount(self) -> None:
+        inp = self.query_one("#prompt-input", Input)
+        inp.focus()
+        inp.cursor_position = len(inp.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class RenameScreen(ModalScreen[str]):
     """Centered input to rename a session's title. Dismisses with the new title,
-    or None on cancel (esc)."""
+    or None on cancel (esc). Own compose (not a PromptScreen instance) so the
+    input keeps the `#title-input` id the existing rename test queries."""
 
     CSS = """
     RenameScreen { align: center middle; }
@@ -146,6 +184,37 @@ class RenameScreen(ModalScreen[str]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    """Centered yes/no confirmation. Dismisses True (y/enter) or False
+    (escape/n)."""
+
+    CSS = """
+    ConfirmScreen { align: center middle; }
+    #box {
+        width: 70; height: auto; padding: 1 2;
+        background: $surface; border: thick $accent;
+    }
+    """
+    BINDINGS = [
+        Binding("y,enter", "confirm", "Confirm"),
+        Binding("escape,n", "decline", "Cancel"),
+    ]
+
+    def __init__(self, question: str):
+        super().__init__()
+        self._question = question
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="box"):
+            yield Static(f"{self._question}  ([dim]y[/] confirm · [dim]esc[/] cancel)")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_decline(self) -> None:
+        self.dismiss(False)
 
 
 class HandoffTUI(App):
@@ -185,8 +254,11 @@ class HandoffTUI(App):
         Binding("Y", "copy_brief", "Copy brief"),
         Binding("enter,tab,l", "focus_detail", "Open brief"),
         Binding("escape,h", "focus_list", "Back to list"),
+        # d/e stay single-key and reversible (r undoes d, e toggles itself) —
+        # deliberate, a confirm modal would slow the common case.
         Binding("d", "mark_done", "Done"),
         Binding("r", "reopen", "Reopen"),
+        Binding("p", "hold", "Hold/release"),
         Binding("x", "delete", "Delete"),
         Binding("g", "scroll_top", "Top"),
         Binding("G", "scroll_bottom", "Bottom"),
@@ -415,10 +487,8 @@ class HandoffTUI(App):
 
         def _done(new_title: str | None) -> None:
             if new_title and new_title != current:
-                dbcli.do_rename(
-                    sid, new_title, compaction_dir=self._dir, db_path=self._db_path
-                )
-                self.notify(f"renamed {sid[:8]}")
+                self._call(dbcli.do_rename, sid, new_title,
+                           compaction_dir=self._dir, db_path=self._db_path)
                 self.run_worker(self._reload(), exclusive=False)
 
         self.push_screen(RenameScreen(current), _done)
@@ -429,12 +499,28 @@ class HandoffTUI(App):
         if not row:
             return
         unarchive = row.get("status") == "archived"
-        dbcli.do_archive(
-            row["session_id"], unarchive=unarchive,
-            compaction_dir=self._dir, db_path=self._db_path,
-        )
-        self.notify(f"{'unarchived' if unarchive else 'archived'} {row['session_id'][:8]}")
+        self._call(dbcli.do_archive, row["session_id"], unarchive=unarchive,
+                   compaction_dir=self._dir, db_path=self._db_path)
         await self._reload()
+
+    def action_hold(self) -> None:
+        row = self._selected_row()
+        if not row:
+            return
+        sid = row["session_id"]
+        if row.get("status") == "on_hold":
+            self._call(dbcli.do_hold, sid, note=None, until=None, release=True,
+                       compaction_dir=self._dir, db_path=self._db_path)
+            self.run_worker(self._reload(), exclusive=False)
+            return
+
+        def _done(note: str | None) -> None:
+            if note is not None:
+                self._call(dbcli.do_hold, sid, note=note or None, until=None,
+                           release=False, compaction_dir=self._dir, db_path=self._db_path)
+                self.run_worker(self._reload(), exclusive=False)
+
+        self.push_screen(PromptScreen("Hold — why / what next?", ""), _done)
 
     def action_toggle_markdown(self) -> None:
         self._markdown = not self._markdown
@@ -523,11 +609,22 @@ class HandoffTUI(App):
             self._render_detail(self._detail_text)
             self.notify("raw mode — text selectable (cmd+c to copy, m to re-render)")
 
+    def _call(self, fn, *args, **kwargs):
+        # Every do_* mutation surfaces its (ok, msg) as a toast; a locked DB
+        # or other crash shows a toast too, not a traceback screen.
+        try:
+            ok, msg = fn(*args, **kwargs)
+            self.notify(msg, severity="information" if ok else "error")
+            return ok
+        except Exception as e:
+            self.notify(f"error: {e}", severity="error")
+            return False
+
     async def _mutate(self, fn) -> None:
         sid = self._selected_sid()
         if not sid:
             return
-        fn(sid)
+        self._call(fn, sid)
         await self._reload()
 
     async def action_mark_done(self) -> None:
@@ -544,12 +641,19 @@ class HandoffTUI(App):
             )
         )
 
-    async def action_delete(self) -> None:
-        await self._mutate(
-            lambda sid: dbcli.do_delete(
-                sid, compaction_dir=self._dir, remove_file=False, db_path=self._db_path
-            )
-        )
+    def action_delete(self) -> None:
+        row = self._selected_row()
+        if not row:
+            return
+        sid = row["session_id"]
+
+        def _done(confirmed: bool | None) -> None:
+            if confirmed:
+                self._call(dbcli.do_delete, sid, compaction_dir=self._dir,
+                           remove_file=False, db_path=self._db_path)
+                self.run_worker(self._reload(), exclusive=False)
+
+        self.push_screen(ConfirmScreen(f"Delete DB row for {sid[:8]}? (brief file kept)"), _done)
 
 
 def main(*, db_path=None, compaction_dir=dbcli.DEFAULT_DIR) -> None:

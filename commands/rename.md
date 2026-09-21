@@ -18,7 +18,7 @@ if [ -z "$SID" ] || [ "$SID" = "$ARG" ]; then
   exit 1
 fi
 
-cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli rename "$SID" $TITLE
+cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli rename "$SID" -- "$TITLE"
 ```
 
 Pass the `HANDRENAME_OK` / `HANDRENAME_ERROR` line through to the user.

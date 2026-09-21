@@ -29,9 +29,8 @@ from your own context. Shape:
 > where it stands>. Next: <single next step>.
 
 Keep it under 300 chars, one line, concrete (PR numbers, ticket ids, env
-names). Do NOT use single quotes (`'`) in the text — it's embedded in a
-single-quoted shell var. This recap lands in the brief frontmatter and the
-sessions DB (`~/.claude/compaction/sessions.db`).
+names). This recap lands in the brief frontmatter and the sessions DB
+(`~/.claude/compaction/sessions.db`).
 
 ### 2. Run the handoff
 
@@ -43,7 +42,10 @@ located by that session id alone (a globally-unique UUID = the jsonl
 filename), so it's found regardless of the shell's cwd.
 
 ```bash
-RECAP='<your 1-2 sentence recap here>'
+RECAP=$(cat <<'HANDOFF_RECAP_EOF'
+<your 1-2 sentence recap here>
+HANDOFF_RECAP_EOF
+)
 SID="${CLAUDE_SESSION_ID}"
 REAL_CWD=$(pwd -P)
 # CC fixes the transcript dir at session start; the shell cwd can drift
@@ -113,6 +115,7 @@ case "$STATUS" in
     echo "Restore with either:"
     echo "  /hand:on $SID"
     echo "  /hand:on $BRIEF_PATH"
+    echo "  park it:   /hand:hold <why> [--until YYYY-MM-DD]"
     ;;
 esac
 ```

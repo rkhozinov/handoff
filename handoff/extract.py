@@ -283,16 +283,35 @@ def iter_real_user_msgs(entries: Iterable[dict]) -> list[str]:
     return out
 
 
-def extract_title(entries: Iterable[dict]) -> str | None:
-    """CC's own generated session title — the LAST `ai-title` entry wins
-    (CC re-titles as the session evolves). Deterministic, no LLM call."""
+def extract_custom_title(entries: Iterable[dict]) -> str | None:
+    """User-set session name — the LAST `custom-title` entry (the user can
+    rename again). This is the name `claude --resume "<name>"` accepts."""
     title: str | None = None
     for e in entries:
-        if e.get("type") == "ai-title":
-            t = str(e.get("aiTitle") or "").strip()
+        if e.get("type") == "custom-title":
+            t = str(e.get("customTitle") or "").strip()
             if t:
                 title = t
     return title
+
+
+def extract_title(entries: Iterable[dict]) -> str | None:
+    """Session title: user-set name wins over CC's generated one — the last
+    `custom-title` if any, else the last `ai-title` (CC re-titles as the
+    session evolves). Deterministic, no LLM call."""
+    ai_title: str | None = None
+    custom_title: str | None = None
+    for e in entries:
+        t = e.get("type")
+        if t == "ai-title":
+            v = str(e.get("aiTitle") or "").strip()
+            if v:
+                ai_title = v
+        elif t == "custom-title":
+            v = str(e.get("customTitle") or "").strip()
+            if v:
+                custom_title = v
+    return custom_title or ai_title
 
 
 def is_injected_user_msg(text: str) -> bool:

@@ -49,6 +49,8 @@ Behavior:
 * `/hand:on --all` — When the picker fires, include briefs marked
   `status: done` (normally hidden). Useful when the auto-detector
   was wrong and you want to revive a closed brief.
+* `/hand:on` on an `on_hold` brief releases the hold (status →
+  `in_progress`, `hold_until` cleared, note kept).
 
 ## Resolution
 
