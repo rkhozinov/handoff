@@ -51,7 +51,7 @@ regression — fix the filter, don't relax the invariant.
   daily throttle, 50/run); removed 2026-09-21 under the ground rule below.
 - `handoff/db.py` — SQLite session index (`~/.claude/compaction/sessions.db`,
   WAL, one row per session: all frontmatter fields + trimmed `body`).
-  `connect`/`upsert_session`/`get_session`/`list_sessions`/`search_sessions`/
+  `connect`/`upsert_session`/`get_session`/`list_sessions`/`list_idle`/`list_holds`/`search_sessions`/
   `set_status`/`set_resumed`/`delete_session`/`rebuild_from_briefs`. Brief
   `.md` files stay authoritative; DB mirrors them and is rebuildable.
 - `handoff/dbcli.py` — `hand` CLI + the backend the /hand:* command bash
@@ -174,7 +174,8 @@ change the output shape there first, never in the `.md`.
   auto-revive it.
 - `/hand:list [--all] [--any-cwd]` (`commands/list.md`) — grouped by
   status, current cwd, done hidden by default.
-- `/hand:hold` / `/hand:holds` — see "on_hold" below.
+- `/hand:hold` / `/hand:holds` — see "on_hold" below; `/hand:review` — see
+  "Review" below.
 - `/hand:tasks` (`commands/tasks.md`) — manual door into the same
   export/import machinery `/hand:off` and `/hand:on` drive automatically.
 
@@ -344,8 +345,22 @@ positive silently costs real work and the user cannot review what an
 automatic pass did. Idle briefs are surfaced for a human decision by
 `hand review` (see "Review") instead.
 
-`is_stale(fm, days)` remains as the idle predicate `hand review` uses to
-list candidates; nothing acts on it.
+`is_stale(fm, days)` / `idle_days(fm)` remain as the idle predicates
+`hand review` and the TUI use to list candidates; nothing acts on them.
+
+## Review — the manual triage loop
+
+`hand review [--days 14] [--cwd P] [--limit 25] [--all]` (`/hand:review`)
+prints open briefs idle > N days, longest idle first, and writes nothing.
+Decisions are commands, one per row: `hand done <sid8>`, `hand hold <sid8>
+--note …`, `hand archive <sid8>`, `hand keep <sid8>` (stamps `last_resumed`
+only — "not now", status unchanged). Every command accepts an 8-char sid
+prefix; the DB already has one real 8-char collision, so an ambiguous
+prefix is refused (`*_ERROR ambiguous prefix`), never guessed — resolution
+lives in `dbcli.resolve_sid`, CLI layer only; `do_*` take full sids. TUI:
+`s` = idle-only filter, `k` = keep, idle rows show `idle Nd`
+(`tui.IDLE_DAYS`). `/hand:review` shows the report, asks, and applies only
+what the user answered.
 
 ## Known follow-ups (not blocking)
 
