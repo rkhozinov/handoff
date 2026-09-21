@@ -32,8 +32,10 @@ regression — fix the filter, don't relax the invariant.
   used by bench/report stats only).
 - `handoff/trim.py` — `render_brief(entries, sid, cwd, archive_hash)`.
   `build_convo` exposed for the report's audit panel.
-- `handoff/cli.py` — orchestrator: load_jsonl → archive → prune → render →
-  write → upsert DB row.
+- `handoff/cli.py` — the snapshot pipeline: `run(args) -> OffResult`
+  (load_jsonl → archive → prune → render → atomic write → upsert DB row;
+  brief is written BEFORE the best-effort agent-report store) and a thin
+  `main` for direct use. `dbcli.do_off` calls `run` in-process.
 - `handoff/archive.py` — trims the transcript and stores it as a
   `session-archive` memory doc, then prunes old ones. `/hand:off` is the only
   producer of these (~12/day) and nothing removed them, so the doc store had
@@ -127,42 +129,55 @@ PYTHONPATH=. python3 -m handoff.cli \
   --no-archive --no-db --out-dir /tmp/smoke
 ```
 
+Mutation-checking gotcha (bit us 2026-09-21): a mutant that keeps the same
+byte length (`rows[:10]` → `rows[:12]`) restored within the same second is
+NOT recompiled — Python's pyc check is mtime+size — so the suite keeps
+running the mutant. `find . -name __pycache__ -prune -exec rm -rf {} +`
+after restoring, or run pytest with `-p no:cacheprovider -B` …
+`PYTHONDONTWRITEBYTECODE=1` during mutation runs.
+
 `tests/fixtures/raw/` is gitignored (PII). Fixture-dependent tests skip
 when raw fixtures are absent.
 
 ## /hand:off and /hand:on contracts
 
-- `/hand:off` lives at `commands/off.md`. Uses `${CLAUDE_SESSION_ID}`
-  to derive both the session id and the transcript path from one source
-  — don't decouple, that bug surfaced on 2026-05-08 (brief content
-  belonged to a different session than the filename). The recap is passed
-  through a quoted heredoc, not `RECAP='…'` — a `'` in LLM-composed text
-  was a shell syntax error and `'; cmd; '` was command execution. It also exports the
-  session's task list to `~/.claude/compaction/tasks/<sid>.json`. That
-  step is strictly best-effort and swallows its own errors: the brief is
-  the primary artifact and a task-export failure must NEVER turn a
-  successful `HANDOFF_OK` into an error.
-- `/hand:on` lives at `commands/on.md`. Accepts one or more
-  `<session-id>`s / full paths — each resolves independently and emits
-  its own `BRIEF_PATH`/`BRIEF_STATUS` pair, so several briefs can stack
-  into one session. Unresolvable args print `BRIEF_MISSING arg=<x>` and
-  are skipped; the picker only fires when NOTHING resolved.
-  It also merges each brief's task bundle into the resumed session
-  (`--merge --only-open`), one call per sid. A missing bundle or
-  `HANDTASKS_EMPTY` means "that session had no tasks" — say nothing and
-  carry on; only `HANDTASKS_ERROR` is worth surfacing.
-  `dbcli on` takes the same `nargs="+"` sid list. Bare `/hand:on` walks
-  newest jsonls in the cwd's project dir and Reads the first matching
-  brief — non-deterministic when the cwd has many parallel sessions, so
-  prefer passing the session id.
-- `/hand:done <sid> [--reopen]` lives at `commands/done.md`. Manual
-  status flip — sets `completion_signal: manual`, which is sticky: a
-  later `/hand:off` on the same sid will NOT auto-revive it.
-- `/hand:list [--all] [--any-cwd]` lives at `commands/list.md`. Reads
-  frontmatter, groups by status, defaults to current cwd + hides done.
-- `/hand:hold` (`commands/hold.md`) and `/hand:holds` (`commands/holds.md`)
-  — see "on_hold" below.
-- `/hand:tasks` lives at `commands/tasks.md`. Manual door into the same
+The command files under `commands/` are one-call stubs: description + a
+single `hand …` invocation + what to do with its stdout. All logic lives in
+`handoff/dbcli.py` behind `tests/test_dbcli_off_on.py`, whose expected
+strings were captured verbatim from the old bash blocks on 2026-09-21 —
+change the output shape there first, never in the `.md`.
+
+- `/hand:off` (`commands/off.md`) → `hand off "$CLAUDE_SESSION_ID" --cwd
+  "$(pwd -P)" --recap-stdin <<'EOF' … EOF`. `dbcli.do_off` locates
+  `<projects>/*/<sid>.jsonl` by session id alone (the shell cwd can drift
+  into a worktree; the transcript's own `cwd` wins), runs `cli.run`
+  in-process, exports the task bundle best-effort (a failure there is
+  `tasks: skipped`, never an error), and prints the `HANDOFF_OK` block +
+  restore/park hints, or `HANDOFF_ERROR …` rc 1. The recap arrives on stdin
+  from a quoted heredoc, so there is no shell-quoting rule for the LLM to
+  follow (the old `RECAP='…'` was both a syntax trap and command execution).
+- `/hand:hold` (`commands/hold.md`) → `hand off … --hold "<note>" [--until D]`,
+  or `hand hold <sid> --note …` when the first argument is an existing
+  session id. Six lines of argument routing in bash, nothing else.
+- `/hand:on` (`commands/on.md`) → `hand on --restore --current
+  "$CLAUDE_SESSION_ID" $ARGUMENTS`. `dbcli.do_on_restore` resolves each
+  token (path, then `<compaction>/<sid>.md`), prints one
+  `BRIEF_PATH=`/`BRIEF_STATUS=` pair per hit and `BRIEF_MISSING arg=<x>`
+  per miss, flips each hit via `do_resume` (`done`/`archived` are left
+  alone and say so), merges its task bundle into the current session
+  (`--merge --only-open`; a missing bundle is silent), and — only when
+  nothing resolved — prints the picker from the DB (`created DESC`, max 10,
+  `done`+`archived` hidden unless `--all`; the old `ls -t`+awk picker
+  ordered by mtime and showed archived). The `.md` then tells Claude to
+  Read every `BRIEF_PATH` before speaking. Bare `/hand:on` only matches the
+  current session id; `/clear` mints a new one, so pass the printed id.
+- `/hand:done <sid> [--reopen]` (`commands/done.md`) — manual status flip,
+  `completion_signal: manual`, sticky: a later `/hand:off` will NOT
+  auto-revive it.
+- `/hand:list [--all] [--any-cwd]` (`commands/list.md`) — grouped by
+  status, current cwd, done hidden by default.
+- `/hand:hold` / `/hand:holds` — see "on_hold" below.
+- `/hand:tasks` (`commands/tasks.md`) — manual door into the same
   export/import machinery `/hand:off` and `/hand:on` drive automatically.
 
 ## Claude Code's task store (undocumented — verified, not assumed)
@@ -255,10 +270,9 @@ deadline. It is a **status** (not a flag) because every filter — `hand
 list`, the `/hand:on` picker, `is_stale`, `archive._open_archive_hashes`,
 TUI icons — keys on status.
 
-- `/hand:hold <note> [--until YYYY-MM-DD]` = the `/hand:off` snapshot block
-  (recap, brief, archive, task bundle) + `hand hold`. Guarantees a brief
-  exists. `/hand:hold <sid> <note>` holds an existing brief without
-  re-snapshotting. The snapshot block is a COPY of off.md's — keep in sync.
+- `/hand:hold <note> [--until YYYY-MM-DD]` = `hand off … --hold` (recap,
+  brief, archive, task bundle, then the hold). Guarantees a brief exists.
+  `/hand:hold <sid> <note>` holds an existing brief without re-snapshotting.
 - `/hand:holds [--due]` (`hand holds`) is the retrieval view, all cwds,
   soonest deadline first, each row with a paste-ready
   `cd <cwd> && claude --resume <sid>   |  /hand:on <sid>`. `--due` prints

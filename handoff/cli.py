@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from handoff.archive import archive_full_session, maybe_prune_archives
@@ -90,17 +91,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+@dataclass
+class OffResult:
+    brief_path: Path
+    fm: dict
+    brief_bytes: int
+    raw_bytes: int
+    archive_hash: str | None
+    agent_stored: int
+    agent_count: int
+    tokens: int
+
+
+def run(args: argparse.Namespace) -> OffResult:
+    """The /hand:off pipeline: transcript -> brief file (+ archive + DB row).
+    Raises on failure (`main` is the printing/rc wrapper; `dbcli.do_off` is
+    the other caller and catches exceptions itself)."""
     transcript = os.path.expanduser(args.transcript)
     if not os.path.isfile(transcript):
-        sys.stderr.write(f"Transcript not found: {transcript}\n")
-        return 1
+        raise FileNotFoundError(f"Transcript not found: {transcript}")
 
     entries = load_jsonl(transcript)
     if not entries:
-        sys.stderr.write("Transcript is empty or unreadable\n")
-        return 1
+        raise ValueError("Transcript is empty or unreadable")
 
     # The transcript records the session's real cwd; the shell --cwd passed by
     # /hand:off can be a drifted worktree path. Prefer the authoritative one.
@@ -170,19 +183,41 @@ def main(argv: list[str] | None = None) -> int:
                 brief_path=str(brief_path),
             )
 
-    print(str(brief_path))
     brief_bytes = len(brief.encode("utf-8"))
     brief_tok = count_tokens(brief, mode=args.token_mode)
     # ponytail: byte ratio, not tokens — under the default chars4 mode a token
     # ratio is bytes//4 on both sides, i.e. the same number for a real
     # tokenizer pass over an 80MB jsonl. stat() costs nothing, no re-read.
     raw_bytes = os.path.getsize(transcript)
-    saved_pct = 100 * (1 - brief_bytes / max(1, raw_bytes))
+
+    return OffResult(
+        brief_path=brief_path,
+        fm=fm,
+        brief_bytes=brief_bytes,
+        raw_bytes=raw_bytes,
+        archive_hash=archive_hash,
+        agent_stored=agent_stored,
+        agent_count=agent_count,
+        tokens=brief_tok,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        result = run(args)
+    except (FileNotFoundError, ValueError) as e:
+        sys.stderr.write(f"{e}\n")
+        return 1
+
+    print(str(result.brief_path))
+    saved_pct = 100 * (1 - result.brief_bytes / max(1, result.raw_bytes))
+    fm = result.fm
     sys.stderr.write(
-        f"brief={brief_bytes}B (~{brief_tok} tok)  "
-        f"raw={raw_bytes}B  saved={saved_pct:.1f}%  "
-        f"archive={archive_hash[:12] if archive_hash else 'none'}  "
-        f"agent_reports={agent_stored}/{agent_count}  "
+        f"brief={result.brief_bytes}B (~{result.tokens} tok)  "
+        f"raw={result.raw_bytes}B  saved={saved_pct:.1f}%  "
+        f"archive={result.archive_hash[:12] if result.archive_hash else 'none'}  "
+        f"agent_reports={result.agent_stored}/{result.agent_count}  "
         f"status={fm['status']}({fm['completion_signal']})  "
         f"recap={fm['recap_source'] or 'none'}\n"
     )

@@ -16,7 +16,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from handoff import db, tasks
+from handoff import cli, db, tasks
 from handoff.fsutil import atomic_write
 from handoff.extract import extract_title, load_jsonl
 from handoff.lifecycle import (
@@ -238,6 +238,200 @@ def do_delete(sid: str, *, compaction_dir: str, remove_file: bool, db_path=None)
     return True, f"HANDRM_OK sid={sid} row={'removed' if removed else 'absent'}{extra}"
 
 
+def do_off(
+    sid: str, *, cwd: str, recap: str | None, hold: str | None, until: str | None,
+    projects_dir: str, compaction_dir: str, db_path,
+    no_archive: bool, no_agent_store: bool, tasks_root: str, bundle_dir: str,
+) -> tuple[int, list[str]]:
+    """The /hand:off pipeline: locate the transcript, run `cli.run`, export
+    tasks (best-effort), optionally place a hold, and render the operator-
+    facing block. Contracts pinned in tests/test_dbcli_off_on.py."""
+    try:
+        sid = _check_sid(sid)
+    except ValueError as e:
+        return 1, [f"HANDOFF_ERROR {e}"]
+
+    matches = sorted(Path(os.path.expanduser(projects_dir)).glob(f"*/{sid}.jsonl"))
+    if not matches:
+        return 1, [f"HANDOFF_ERROR sid={sid} transcript="]
+    transcript = matches[0]
+
+    cli_args = [
+        "--transcript", str(transcript), "--session-id", sid, "--cwd", cwd,
+        "--out-dir", compaction_dir,
+    ]
+    if recap:
+        cli_args += ["--recap", recap]
+    if no_archive:
+        cli_args.append("--no-archive")
+    if no_agent_store:
+        cli_args.append("--no-agent-store")
+    if db_path:
+        cli_args += ["--db", db_path]
+
+    try:
+        result = cli.run(cli.parse_args(cli_args))
+    except Exception as e:  # the brief pipeline exploded — report, don't raise
+        sys.stderr.write(f"{e}\n")
+        return 1, ["HANDOFF_ERROR: handoff.cli failed (exit=1, brief=[])"]
+
+    fm = result.fm
+
+    tasks_line = "none in this session"
+    try:
+        _, tlines, _ = do_tasks_export(
+            sid, tasks_root=tasks_root, bundle_dir=bundle_dir, out=None, list_id=None
+        )
+        first = tlines[0] if tlines else ""
+        if first.startswith("HANDTASKS_OK"):
+            m = re.search(r"tasks=(\d+)", first)
+            tasks_line = f"exported ({m.group(1) if m else '?'} tasks)"
+        elif first.startswith("HANDTASKS_EMPTY"):
+            tasks_line = "none in this session"
+        else:
+            tasks_line = "skipped"
+    except Exception:
+        tasks_line = "skipped"
+
+    saved_pct = 100 * (1 - result.brief_bytes / max(1, result.raw_bytes))
+    lines = [
+        "HANDOFF_OK",
+        f"  recap:      {fm.get('recap') or ''}",
+        f"  session_id: {sid}",
+        f"  brief:      {result.brief_path}",
+        f"  size:       brief={result.brief_bytes}B raw={result.raw_bytes}B saved={saved_pct:.1f}%",
+        f"  status:     {fm['status']} ({fm['completion_signal']})",
+        f"  tasks:      {tasks_line}",
+        "  db:         ~/.claude/compaction/sessions.db (row upserted)",
+        "",
+    ]
+    if fm["status"] == "done":
+        lines += [
+            "Detector marked this session DONE — it's hidden from the",
+            f"/hand:on picker. To resume anyway: /hand:on {sid}",
+            f"To revive permanently: /hand:done {sid} --reopen",
+        ]
+    else:
+        lines += [
+            "Restore with either:",
+            f"  /hand:on {sid}",
+            f"  /hand:on {result.brief_path}",
+            "  park it:   /hand:hold <why> [--until YYYY-MM-DD]",
+        ]
+
+    rc = 0
+    if hold:
+        ok, msg = do_hold(
+            sid, note=hold, until=until, release=False,
+            compaction_dir=compaction_dir, db_path=db_path,
+        )
+        lines.append(msg)
+        if ok:
+            lines.append(f"resume: cd {fm['cwd']} && claude --resume {sid}   |  /hand:on {sid}")
+        else:
+            rc = 1
+
+    return rc, lines
+
+
+def do_on_restore(
+    args: list[str], *, current_sid: str, show_all: bool,
+    compaction_dir: str, db_path, tasks_root: str, bundle_dir: str,
+) -> tuple[int, list[str]]:
+    """The /hand:on pipeline: resolve each arg to a brief, resume it, merge
+    its task bundle into the current session — or print the picker when
+    nothing resolved. Contracts pinned in tests/test_dbcli_off_on.py."""
+    compaction_path = Path(os.path.expanduser(compaction_dir))
+    tokens = [a for a in args if a != "--all"]
+    lines: list[str] = []
+    resolved: list[Path] = []
+
+    def _resolve(tok: str) -> Path | None:
+        p = Path(tok)
+        if p.is_file():
+            return p
+        cand = compaction_path / f"{tok}.md"
+        return cand if cand.is_file() else None
+
+    def _emit_resolution(tok: str, p: Path | None) -> None:
+        if p is None:
+            lines.append(f"BRIEF_MISSING arg={tok} sid={current_sid} show_all={int(show_all)}")
+            return
+        fm = parse_frontmatter(p.read_text(encoding="utf-8"))
+        lines.append(f"BRIEF_PATH={p}")
+        lines.append(f"BRIEF_STATUS={(fm or {}).get('status') or ''}")
+        resolved.append(p)
+
+    if tokens:
+        for tok in tokens:
+            _emit_resolution(tok, _resolve(tok))
+    else:
+        _emit_resolution("", _resolve(current_sid))
+
+    if resolved:
+        for p in resolved:
+            sid = p.stem
+            if not _SID_RE.match(sid):
+                continue
+            ok, msg = do_resume(sid, compaction_dir=compaction_dir, db_path=db_path)
+            lines.append(msg)
+            bpath = tasks.bundle_path(sid, base=bundle_dir)
+            if not bpath.is_file():
+                continue
+            bundle, err = _load_bundle(str(bpath))
+            if bundle is None:
+                lines.append(err)
+                continue
+            _, tlines, _ = do_tasks_import(
+                bundle, current_sid, op="import",
+                tasks_root=tasks_root, bundle_dir=bundle_dir, list_id=None,
+                mode=tasks.MODE_MERGE, only_open=True, dry_run=False,
+            )
+            if tlines and not tlines[0].startswith("HANDTASKS_EMPTY"):
+                lines.extend(tlines)
+        return 0, lines
+
+    # Nothing resolved — the picker. Ordered `created DESC` from the DB
+    # (deliberate divergence from the old ls-t/awk picker's mtime order,
+    # which also showed `archived`; this one hides it unless --all).
+    if show_all:
+        lines.append(
+            "No brief found. ALL recent briefs (newest first, including done). "
+            "Reply with the number or session id."
+        )
+    else:
+        lines.append(
+            "No brief found. Open briefs (newest first, done hidden — pass --all "
+            "to include). Reply with the number or session id."
+        )
+    lines.append("")
+    with db.connect(db_path) as conn:
+        rows = db.list_sessions(conn, cwd=None, include_done=show_all, include_archived=show_all)
+        goals: dict[str, str] = {}
+        for r in rows[:10]:
+            if not r.get("recap"):
+                full = db.get_session(conn, r["session_id"])
+                line = _first_user_line(full["body"] or "") if full else None
+                if line:
+                    goals[r["session_id"]] = line
+
+    for i, r in enumerate(rows[:10], start=1):
+        sid = r["session_id"]
+        status = r.get("status") or "?"
+        created = r.get("created") or ""
+        bp = r.get("brief_path")
+        bpath = Path(bp) if bp else compaction_path / f"{sid}.md"
+        size = bpath.stat().st_size if bpath.is_file() else "?"
+        lines.append(f"{i:2d}. {sid}  [{status}]  ({created}, {size} bytes)")
+        if r.get("cwd"):
+            lines.append(f"    cwd:  {r['cwd']}")
+        goal = r.get("recap") or goals.get(sid)
+        if goal:
+            lines.append(f"    goal: {goal[:120]}")
+        lines.append("")
+    return 1, lines
+
+
 # --------------------------------------------------------------------------- #
 # subcommand handlers
 # --------------------------------------------------------------------------- #
@@ -264,12 +458,37 @@ def _cmd_prune_archives(args) -> int:
 
 
 def _cmd_on(args) -> int:
+    if getattr(args, "restore", False):
+        rc, lines = do_on_restore(
+            args.sid, current_sid=args.current, show_all=args.all,
+            compaction_dir=args.dir, db_path=args.db,
+            tasks_root=args.tasks_dir, bundle_dir=args.bundle_dir,
+        )
+        for line in lines:
+            print(line)
+        return rc
     rc = 0
     for sid in args.sid:
         ok, msg = do_resume(sid, compaction_dir=args.dir, db_path=args.db)
         print(msg)
         if not ok:
             rc = 1
+    return rc
+
+
+def _cmd_off(args) -> int:
+    if args.until and not args.hold:
+        sys.stderr.write("hand off: --until requires --hold\n")
+        return 2
+    recap = sys.stdin.read().strip() if args.recap_stdin else None
+    rc, lines = do_off(
+        args.sid, cwd=args.cwd, recap=recap, hold=args.hold, until=args.until,
+        projects_dir=args.projects, compaction_dir=args.dir, db_path=args.db,
+        no_archive=args.no_archive, no_agent_store=args.no_agent_store,
+        tasks_root=args.tasks_dir, bundle_dir=args.bundle_dir,
+    )
+    for line in lines:
+        print(line)
     return rc
 
 
@@ -728,10 +947,34 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_args(pp)
     pp.set_defaults(func=_cmd_prune_archives)
 
-    po = sub.add_parser("on", help="Mark a brief resumed (status+last_resumed)")
-    po.add_argument("sid", nargs="+", help="one or more session ids")
+    po = sub.add_parser(
+        "on", help="Mark a brief resumed (status+last_resumed), or --restore for the full /hand:on pipeline"
+    )
+    po.add_argument("sid", nargs="*", help="one or more session ids (or, with --restore, ids/paths)")
+    po.add_argument(
+        "--restore", action="store_true",
+        help="Resolve args to briefs, resume + merge tasks, or print the picker (the /hand:on pipeline)",
+    )
+    po.add_argument("--current", default=None, help="Current session id (--restore)")
+    po.add_argument("--all", action="store_true", help="Picker: include done/archived (--restore)")
+    po.add_argument("--tasks-dir", default=tasks.DEFAULT_TASKS_DIR, help="CC tasks dir (--restore)")
+    po.add_argument("--bundle-dir", default=tasks.DEFAULT_BUNDLE_DIR, help="Bundle dir (--restore)")
     _add_db_args(po)
     po.set_defaults(func=_cmd_on)
+
+    poff = sub.add_parser("off", help="Run the /hand:off pipeline (trim, archive, export tasks, DB upsert)")
+    poff.add_argument("sid")
+    poff.add_argument("--cwd", required=True)
+    poff.add_argument("--recap-stdin", action="store_true", help="Read the recap from stdin")
+    poff.add_argument("--hold", default=None, help="Also place the session on hold with this note")
+    poff.add_argument("--until", default=None, help="Hold resume-by date YYYY-MM-DD (requires --hold)")
+    poff.add_argument("--projects", default=DEFAULT_PROJECTS, help="CC projects dir")
+    poff.add_argument("--no-archive", action="store_true")
+    poff.add_argument("--no-agent-store", action="store_true")
+    poff.add_argument("--tasks-dir", default=tasks.DEFAULT_TASKS_DIR, help="CC tasks dir")
+    poff.add_argument("--bundle-dir", default=tasks.DEFAULT_BUNDLE_DIR, help="Bundle dir")
+    _add_db_args(poff)
+    poff.set_defaults(func=_cmd_off)
 
     pl = sub.add_parser("list", help="List sessions grouped/filtered")
     pl.add_argument("--all", action="store_true", help="Include done + archived")
