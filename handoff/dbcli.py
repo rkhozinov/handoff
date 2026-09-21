@@ -324,7 +324,7 @@ def do_off(
 
     cli_args = [
         "--transcript", str(transcript), "--session-id", sid, "--cwd", cwd,
-        "--out-dir", compaction_dir,
+        "--out-dir", compaction_dir, "--tasks-dir", tasks_root,
     ]
     if recap:
         cli_args += ["--recap", recap]

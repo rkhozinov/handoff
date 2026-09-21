@@ -1,11 +1,12 @@
 ---
-description: List on_hold sessions, due-first. Pass --due to show only sessions past their resume-by date.
+description: List on_hold sessions, due-first. Pass --due to show only sessions past their resume-by date. See /hand:assess to triage them in bulk.
 argument-hint: "[--due]"
 ---
 
 Run:
 
 ```bash
+set -f
 cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli holds $ARGUMENTS
 ```
 

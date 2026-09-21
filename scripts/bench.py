@@ -11,53 +11,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from handoff.extract import (
-    extract_code_anchors,
-    extract_decisions,
-    extract_errors,
-    extract_files_touched,
-    iter_real_user_msgs,
-    iter_signal_user_msgs,
-    load_jsonl,
-)
-from handoff.tokenizer import VALID_MODES, count_tokens
-from handoff.trim import render_brief
+from handoff.extract import load_jsonl
+from handoff.tokenizer import VALID_MODES
+
+from scripts.fixture_stats import fixture_stats
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def stats_for(fixture: Path, token_mode: str = "auto") -> dict:
-    raw = fixture.read_bytes()
-    raw_text = raw.decode("utf-8", errors="replace")
     entries = load_jsonl(str(fixture))
-    all_user = iter_real_user_msgs(entries)
-    signal_user = iter_signal_user_msgs(entries)
-
-    brief = render_brief(
-        entries,
-        session_id=fixture.stem,
-        cwd="/bench",
-        archive_hash=None,
-    )
-    brief_bytes = len(brief.encode("utf-8"))
-
-    signal_kept = sum(1 for m in signal_user if m in brief)
-
-    return {
-        "fixture": fixture.name,
-        "bytes_in": len(raw),
-        "tok_in": count_tokens(raw_text, mode=token_mode),
-        "brief_b": brief_bytes,
-        "brief_tok": count_tokens(brief, mode=token_mode),
-        "ratio_pct": round(100 * brief_bytes / max(1, len(raw)), 2),
-        "user_total": len(all_user),
-        "user_signal": len(signal_user),
-        "signal_kept": signal_kept,
-        "decisions": len(extract_decisions(signal_user)),
-        "files": len(extract_files_touched(entries)),
-        "code_anchors": len(extract_code_anchors(entries)),
-        "errors": len(extract_errors(entries)),
-    }
+    return fixture_stats(fixture, entries, token_mode)
 
 
 def fmt_table(rows: list[dict]) -> str:
@@ -71,7 +35,7 @@ def fmt_table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--fixtures",
@@ -88,7 +52,7 @@ def main() -> int:
             "falls back to chars/4. See handoff.tokenizer for details."
         ),
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     fdir = Path(args.fixtures)
     if not (fdir.is_dir() and any(fdir.glob("*.jsonl"))):

@@ -37,6 +37,7 @@ nothing.
 ## Run
 
 ```bash
+set -f
 cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli tasks $ARGUMENTS
 ```
 

@@ -35,6 +35,7 @@ from handoff.extract import (
 
 Status = Literal["pending", "in_progress", "done", "archived", "on_hold"]
 Signal = Literal[
+    "auto-tasks",
     "auto-todowrite",
     "auto-user-msg",
     "auto-open-q",
@@ -139,11 +140,28 @@ def _looks_like_question(msg: str) -> bool:
     return m.endswith("?") or bool(_QUESTION_PREFIX_RE.match(m))
 
 
-def detect_status(entries: list[dict]) -> tuple[Status, Signal]:
+def detect_status(
+    entries: list[dict], tasks: list[dict] | None = None
+) -> tuple[Status, Signal]:
     """Classify a transcript's end-state. See module docstring for the
     precedence rules. Returns `(status, signal)` so the caller can record
     WHY a session was marked done — useful for the manual override path
-    and for debugging false positives."""
+    and for debugging false positives.
+
+    `tasks` is the session's TaskCreate/TaskUpdate list (see
+    `handoff.tasks.read_tasks`) — CC no longer emits TodoWrite, so this is
+    now the strongest done signal, checked first (spec-findings.md E)."""
+
+    # 0. The session's task list. CC wipes a list once every task is
+    #    completed, so "all completed" is only observable in the window
+    #    before the wipe — fine, an empty list just falls through. Open
+    #    tasks are a hard veto on `done` from user language: the user
+    #    saying "done" with work still queued is the false positive the
+    #    conservative bias exists for.
+    statuses = [t.get("status") for t in (tasks or [])]
+    if statuses and all(s == "completed" for s in statuses):
+        return ("done", "auto-tasks")
+    tasks_open = bool(statuses)
 
     # 1. TodoWrite final state.
     todos = _last_todowrite_state(entries)
@@ -156,11 +174,15 @@ def detect_status(entries: list[dict]) -> tuple[Status, Signal]:
     #    a question never counts: "is it fixed?" contains `fixed` but is the
     #    opposite of completion (review 2026-09-21, probed → false-done).
     last_msgs = _last_real_user_msgs(entries, n=3)
-    if last_msgs and any(
-        len(m.strip()) <= DONE_MSG_MAX_CHARS
-        and not _looks_like_question(m)
-        and _DONE_RE.search(m)
-        for m in last_msgs
+    if (
+        not tasks_open
+        and last_msgs
+        and any(
+            len(m.strip()) <= DONE_MSG_MAX_CHARS
+            and not _looks_like_question(m)
+            and _DONE_RE.search(m)
+            for m in last_msgs
+        )
     ):
         return ("done", "auto-user-msg")
 

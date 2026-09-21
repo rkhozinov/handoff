@@ -12,19 +12,15 @@ from pathlib import Path
 
 from handoff.extract import (
     assistant_blocks,
-    extract_code_anchors,
     extract_compact_summaries,
-    extract_decisions,
-    extract_errors,
-    extract_files_touched,
     is_real_user,
-    iter_real_user_msgs,
-    iter_signal_user_msgs,
     load_jsonl,
     user_text,
 )
 from handoff.tokenizer import VALID_MODES, count_tokens
 from handoff.trim import _classify_assistant, render_assistant, render_brief
+
+from scripts.fixture_stats import fixture_stats
 
 # Filled in by main() once CLI args are parsed; defaults to "auto" so the
 # helpers also work when imported directly from a test or REPL.
@@ -289,28 +285,25 @@ def build_diff_html(entries: list[dict], max_turns: int | None = None) -> str:
     )
 
 
-def stat_row(label: str, path: Path) -> dict:
-    raw = path.read_bytes()
-    raw_text = raw.decode("utf-8", errors="replace")
-    entries = load_jsonl(str(path))
-    all_user = iter_real_user_msgs(entries)
-    signal_user = iter_signal_user_msgs(entries)
-    brief = render_brief(entries, label, "/bench", archive_hash=None)
-    brief_bytes = len(brief.encode())
+def stat_row(label: str, path: Path, entries: list[dict]) -> dict:
+    """Thin wrapper over the shared `fixture_stats` (spec-findings.md H, #10);
+    `entries` is the already-`load_jsonl`'d transcript (memoized by the
+    caller — #12, avoids a second parse of the same fixture)."""
+    shared = fixture_stats(path, entries, _TOKEN_MODE)
     return {
-        "fixture": path.name,
+        "fixture": shared["fixture"],
         "lines": sum(1 for _ in path.open("rb")),
-        "raw_bytes": len(raw),
-        "raw_tokens": count_tokens(raw_text, mode=_TOKEN_MODE),
-        "user_total": len(all_user),
-        "user_signal": len(signal_user),
-        "brief_bytes": brief_bytes,
-        "brief_tokens": count_tokens(brief, mode=_TOKEN_MODE),
-        "ratio_pct": 100 * brief_bytes / max(1, len(raw)),
-        "decisions": len(extract_decisions(signal_user)),
-        "files": len(extract_files_touched(entries)),
-        "code": len(extract_code_anchors(entries)),
-        "errors": len(extract_errors(entries)),
+        "raw_bytes": shared["bytes_in"],
+        "raw_tokens": shared["tok_in"],
+        "user_total": shared["user_total"],
+        "user_signal": shared["user_signal"],
+        "brief_bytes": shared["brief_b"],
+        "brief_tokens": shared["brief_tok"],
+        "ratio_pct": 100 * shared["brief_b"] / max(1, shared["bytes_in"]),
+        "decisions": shared["decisions"],
+        "files": shared["files"],
+        "code": shared["code_anchors"],
+        "errors": shared["errors"],
     }
 
 
@@ -470,7 +463,7 @@ def hero_metrics(rows: list[dict]) -> str:
     """
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fixtures", default=str(ROOT / "tests" / "fixtures" / "raw"))
     ap.add_argument("--out", default=str(ROOT / "docs" / "report.html"))
@@ -484,7 +477,7 @@ def main() -> int:
             "heuristic. See handoff.tokenizer."
         ),
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     global _TOKEN_MODE
     _TOKEN_MODE = args.token_mode
 
@@ -497,7 +490,10 @@ def main() -> int:
         print("no fixtures available")
         return 1
 
-    rows = [stat_row(f.stem, f) for f in fixtures]
+    # Parse each fixture once (#12) — xhuge is 86 MB and was parsed twice per
+    # run (once here, once in the diff/brief loop below).
+    fixture_entries = {f: load_jsonl(str(f)) for f in fixtures}
+    rows = [stat_row(f.stem, f, fixture_entries[f]) for f in fixtures]
 
     # Build a diff pane and a brief preview for every fixture so the user
     # can switch samples in the report without rerunning the script.
@@ -516,7 +512,7 @@ def main() -> int:
     cc_cmp_templates: list[str] = []
     options: list[str] = []
     for f in fixtures:
-        entries = load_jsonl(str(f))
+        entries = fixture_entries[f]
         d_html = build_diff_html(entries, max_turns=None)
         b_html = render_brief_html(entries, f.stem)
         cc_html = render_cc_compact_compare_html(entries, f.stem)

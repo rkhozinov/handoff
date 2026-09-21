@@ -50,6 +50,14 @@ DEFAULT_OPEN_DAYS = 90
 # automatic pass removed.
 
 
+def _home_relative(path: str) -> str:
+    """`/Users/me/x` -> `~/x`. The archive is a memory doc that outlives the
+    machine; a username in it is both PII and wrong after a rename
+    (spec-findings.md D)."""
+    home = str(Path.home())
+    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
+
+
 def _marker_path(session_id: str) -> Path:
     return Path.home() / ".claude" / "memory" / "extracted" / f"{session_id}.marker"
 
@@ -74,7 +82,12 @@ def archive_full_session(
     Returns the stored content_hash (or None on failure; errors logged to
     stderr). Body sent to memory is trimmed text, not raw JSONL.
     """
-    project = os.path.basename(cwd) or "unknown"
+    # Lazy import: handoff.recall imports _memory_bin from this module, so a
+    # top-level import here would be circular.
+    from handoff.recall import project_tag_from_cwd
+
+    project_tag = project_tag_from_cwd(cwd) or "project:unknown"
+    project = project_tag.removeprefix("project:")
     sid_short = session_id[:8]
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -90,8 +103,8 @@ def archive_full_session(
 
     title = f"Session {sid_short} {project} {date}"
     summary = body[:500] + ("…" if len(body) > 500 else "")
-    tags = ["source:auto", "session-archive", f"project:{project}"]
-    metadata = {"session_id": sid_short, "source_jsonl": transcript_path}
+    tags = ["source:auto", "session-archive", project_tag]
+    metadata = {"session_id": sid_short, "source_jsonl": _home_relative(transcript_path)}
 
     mem = _memory_bin()
     if mem is None:

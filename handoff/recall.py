@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 
 from handoff.archive import _memory_bin
@@ -16,8 +17,13 @@ from handoff.archive import _memory_bin
 def project_tag_from_cwd(cwd: str) -> str:
     """Return a `project:<basename>` tag matching the storage convention used
     elsewhere in the user's memory store. cwd basename is the project folder
-    name (e.g. `handoff`)."""
-    base = os.path.basename(os.path.normpath(cwd))
+    name (e.g. `handoff`). `,` is the tag separator on the `memory` CLI and
+    whitespace makes a tag unsearchable, so both collapse to `-`
+    (spec-findings.md D)."""
+    base = os.path.basename(os.path.normpath(cwd)) if cwd else ""
+    if base == ".":
+        base = ""
+    base = re.sub(r"[,\s]+", "-", base)
     return f"project:{base}" if base else ""
 
 

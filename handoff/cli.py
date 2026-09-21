@@ -31,6 +31,7 @@ from handoff.lifecycle import (
     resolve_frontmatter,
 )
 from handoff.recall import project_tag_from_cwd, store_agent_reports
+from handoff.tasks import read_tasks, tasks_dir
 from handoff.tokenizer import VALID_MODES, count_tokens
 from handoff.trim import render_brief
 
@@ -74,6 +75,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--db",
         default=None,
         help="sessions.db path override (testing)",
+    )
+    p.add_argument(
+        "--tasks-dir",
+        default=None,
+        help=(
+            "Root of the CC task store (default: tasks.DEFAULT_TASKS_DIR). "
+            "The session's own list under it feeds detect_status's strongest "
+            "done signal (spec-findings.md E)."
+        ),
     )
     p.add_argument(
         "--token-mode",
@@ -127,7 +137,8 @@ def run(args: argparse.Namespace) -> OffResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     brief_path = out_dir / f"{args.session_id}.md"
 
-    detected_status, detected_signal = detect_status(entries)
+    session_tasks, _ = read_tasks(tasks_dir(args.session_id, base=args.tasks_dir))
+    detected_status, detected_signal = detect_status(entries, session_tasks)
     fm = resolve_frontmatter(
         session_id=args.session_id,
         cwd=cwd,

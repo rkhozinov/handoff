@@ -13,19 +13,18 @@ but hidden from the default `/hand:list` and `/hand:on` picker — view them wit
 ## Resolve + edit
 
 ```bash
-ARG="$ARGUMENTS"
-UNARCH=""
-case " $ARG " in
-  *' --unarchive '*|*' --unarchive') UNARCH="--unarchive"; ARG="${ARG//--unarchive/}";;
-esac
-SID="${ARG// /}"
+set -f; set -- $ARGUMENTS; set +f
+FLAG=""; SID=""
+for a in "$@"; do
+  case "$a" in
+    --unarchive) FLAG="--unarchive";;
+    -*) echo "HANDARCH_ERROR unknown flag $a"; exit 1;;
+    *) [ -n "$SID" ] && { echo "HANDARCH_ERROR one session id at a time (got '$SID' and '$a')"; exit 1; }; SID="$a";;
+  esac
+done
+[ -z "$SID" ] && { echo "HANDARCH_ERROR usage: /hand:archive <session-id> [--unarchive]"; exit 1; }
 
-if [ -z "$SID" ]; then
-  echo "HANDARCH_ERROR usage: /hand:archive <session-id> [--unarchive]"
-  exit 1
-fi
-
-cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli archive "$SID" $UNARCH
+cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli archive "$SID" $FLAG
 ```
 
 Pass the `HANDARCH_OK` / `HANDARCH_ERROR` line through to the user.

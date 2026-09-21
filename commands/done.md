@@ -10,19 +10,18 @@ later transcript pass.
 ## Resolve + edit
 
 ```bash
-ARG="$ARGUMENTS"
-REOPEN=""
-case " $ARG " in
-  *' --reopen '*|*' --reopen') REOPEN="--reopen"; ARG="${ARG//--reopen/}";;
-esac
-SID="${ARG// /}"
+set -f; set -- $ARGUMENTS; set +f
+FLAG=""; SID=""
+for a in "$@"; do
+  case "$a" in
+    --reopen) FLAG="--reopen";;
+    -*) echo "HANDDONE_ERROR unknown flag $a"; exit 1;;
+    *) [ -n "$SID" ] && { echo "HANDDONE_ERROR one session id at a time (got '$SID' and '$a')"; exit 1; }; SID="$a";;
+  esac
+done
+[ -z "$SID" ] && { echo "HANDDONE_ERROR usage: /hand:done <session-id> [--reopen]"; exit 1; }
 
-if [ -z "$SID" ]; then
-  echo "HANDDONE_ERROR usage: /hand:done <session-id> [--reopen]"
-  exit 1
-fi
-
-cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli done "$SID" $REOPEN
+cd ~/repos/handoff && PYTHONPATH=. python3 -m handoff.dbcli done "$SID" $FLAG
 ```
 
 Pass the `HANDDONE_OK` / `HANDDONE_ERROR` line through to the user — that's all

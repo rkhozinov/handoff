@@ -127,6 +127,20 @@ def is_pasted_terminal_output(text: str) -> bool:
     return len(PASTED_OUTPUT_LINE.findall(text)) >= 3
 
 
+def cut_at_line(text: str, limit: int) -> str:
+    """Truncate to <= limit chars at the last newline before the limit (a
+    mid-line cut is unreadable), then close a fence the cut left open — an
+    odd number of ``` turns the rest of the brief into code (spec-findings.md B)."""
+    head = text[:limit]
+    nl = head.rfind("\n")
+    if nl > 0:
+        head = head[:nl]
+    head = head.rstrip()
+    if head.count("```") % 2:
+        head += "\n```"
+    return head
+
+
 def elide_pasted_output(text: str, preserve_chars: int = PASTED_PRESERVE_CHARS) -> str:
     """Return `text` with the pasted-output tail collapsed to a marker.
 
@@ -137,7 +151,7 @@ def elide_pasted_output(text: str, preserve_chars: int = PASTED_PRESERVE_CHARS) 
     """
     if not is_pasted_terminal_output(text):
         return text
-    head = text[:preserve_chars].rstrip()
+    head = cut_at_line(text, preserve_chars)
     elided = len(text) - len(head)
     if elided <= 0:
         return text
@@ -314,6 +328,17 @@ def extract_title(entries: Iterable[dict]) -> str | None:
     return custom_title or ai_title
 
 
+
+# spec-findings.md A said 80 chars ("CC puts its wrapper first; a quote lives
+# later"), but the failing test's own fixture quotes `<command-name>` at
+# char 36 (of an 83-char lead) — an 80-char window still contains it whole
+# and the test stays red. The real constraint, derived from both fixtures:
+# large enough to hold the longest marker text at position 0 (31 chars, "Base
+# directory for this skill:") and small enough to exclude that marker when it
+# starts at char 36 (< 51, where it would first sit whole in the window).
+INJECTED_SCAN_CHARS = 40
+
+
 def is_injected_user_msg(text: str) -> bool:
     """CC-injected pseudo-user text the user never typed: slash command
     bodies, system-injected wrappers, prior-compaction continuations. These
@@ -323,7 +348,10 @@ def is_injected_user_msg(text: str) -> bool:
     s = text.strip()
     if COMPACTION_CONTINUATION_RE.match(s):
         return True
-    if any(marker in s for marker in SKILL_BODY_MARKERS):
+    # Only the head: a real user msg that quotes a marker later in its body
+    # (e.g. "the file says `<command-name>` is a marker") is not injected.
+    head = s[:INJECTED_SCAN_CHARS]
+    if any(marker in head for marker in SKILL_BODY_MARKERS):
         return True
     if any(s.startswith(p) for p in SYSTEM_INJECTED_PREFIXES):
         return True
@@ -501,36 +529,50 @@ def extract_agent_reports(
     for e in entries:
         if e.get("type") != "user":
             continue
-        c = e.get("message", {}).get("content")
-        if not isinstance(c, list):
-            continue
-        # Prefer the top-level `toolUseResult.content` when present — it holds
-        # the clean synthesized text without the inline UI noise (`agentId: ...`,
-        # trailing `<usage>` blocks) that lives in the displayed tool_result body.
-        tur_text = _agent_report_text_from_tooluseresult(e.get("toolUseResult"))
-        for b in c:
-            if not (isinstance(b, dict) and b.get("type") == "tool_result"):
-                continue
-            meta = use_idx.get(str(b.get("tool_use_id") or ""))
+        for tool_use_id, text in tool_result_texts(e):
+            meta = use_idx.get(tool_use_id)
             if not meta:
                 continue
-            text = tur_text
-            if not text:
-                tc = b.get("content")
-                if isinstance(tc, list):
-                    text = "\n".join(
-                        blk.get("text", "")
-                        for blk in tc
-                        if isinstance(blk, dict) and blk.get("type") == "text"
-                    )
-                elif isinstance(tc, str):
-                    text = tc
-            text = (text or "").strip()
+            text = text.strip()
             if len(text) < min_chars:
                 continue
             if max_chars and len(text) > max_chars:
                 text = text[: max_chars - 3].rstrip() + "..."
             out.append((meta[0], meta[1], text))
+    return out
+
+
+def tool_result_texts(entry: dict) -> list[tuple[str, str]]:
+    """-> [(tool_use_id, text)] for every tool_result block of a user entry.
+    The top-level `toolUseResult.content` is the clean synthesized text (no
+    inline UI noise like `agentId: ...` / trailing `<usage>` blocks) but CC
+    attaches ONE of them per entry, so it can only stand in for a lone
+    block — with several blocks it belongs to none of them in particular
+    (spec-findings.md F3)."""
+    c = entry.get("message", {}).get("content")
+    if not isinstance(c, list):
+        return []
+    blocks = [b for b in c if isinstance(b, dict) and b.get("type") == "tool_result"]
+    tur_text = _agent_report_text_from_tooluseresult(entry.get("toolUseResult"))
+    use_tur = bool(tur_text) and len(blocks) == 1
+    out: list[tuple[str, str]] = []
+    for b in blocks:
+        tool_use_id = str(b.get("tool_use_id") or "")
+        if use_tur:
+            text = tur_text
+        else:
+            tc = b.get("content")
+            if isinstance(tc, list):
+                text = "\n".join(
+                    blk.get("text", "")
+                    for blk in tc
+                    if isinstance(blk, dict) and blk.get("type") == "text"
+                )
+            elif isinstance(tc, str):
+                text = tc
+            else:
+                text = ""
+        out.append((tool_use_id, text or ""))
     return out
 
 

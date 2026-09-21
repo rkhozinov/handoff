@@ -32,11 +32,13 @@ from handoff.extract import (
     AGENT_REPORT_MIN_CHARS,
     SUBAGENT_TOOL_NAMES,
     assistant_blocks,
+    cut_at_line,
     DROP_TOP_TYPES,
     elide_pasted_output,
     is_noise_user_msg,
     is_real_user,
     short_tool_input,
+    tool_result_texts,
     user_text,
 )
 
@@ -84,12 +86,29 @@ def _classify_assistant(
             )
     joined = "\n".join(text_parts).strip()
     if len(joined) > ASSISTANT_TURN_MAX_CHARS:
-        elided = len(joined) - ASSISTANT_TURN_MAX_CHARS
-        joined = (
-            joined[:ASSISTANT_TURN_MAX_CHARS].rstrip()
-            + f"\n…[elided {elided // 1000}k of assistant text — full body in memory doc]"
-        )
+        # Cut at the last newline, not mid-line — a mid-fence cut turns the
+        # rest of the brief into code (spec-findings.md B). `elided` is
+        # computed AFTER the cut so the marker reports what was actually
+        # removed.
+        head = cut_at_line(joined, ASSISTANT_TURN_MAX_CHARS)
+        elided = len(joined) - len(head)
+        joined = head + f"\n…[elided {elided // 1000}k of assistant text — full body in memory doc]"
     return (joined, tool_markers)
+
+
+# A short turn next to a tool call is usually narration ("Now push."), but a
+# short turn carrying a code anchor and no narration verb is a finding
+# ("`delete` removed ALL matches"). Measured 2026-09-21: 7 of 263 rescued
+# (spec-findings.md F1).
+SHORT_SIGNAL_RE = re.compile(r"`|\*\*")
+SHORT_NARRATION_RE = re.compile(
+    r"\b(let me|let's|i'?ll|now (?:i|let|update|find|save|the|commit|push|amend|make|activate)|going to)\b",
+    re.IGNORECASE,
+)
+
+
+def _short_signal(text: str) -> bool:
+    return bool(SHORT_SIGNAL_RE.search(text)) and not SHORT_NARRATION_RE.search(text)
 
 
 SHORT_ACK_REPLY_RE = re.compile(
@@ -133,7 +152,9 @@ def render_assistant(
     tool_markers = _filter_markers(tool_markers)
 
     if text_joined:
-        same_turn_drop = len(text_joined) <= 80 and tool_markers
+        same_turn_drop = (
+            len(text_joined) <= 80 and tool_markers and not _short_signal(text_joined)
+        )
 
         next_is_tool = False
         if next_entry is not None:
@@ -153,6 +174,7 @@ def render_assistant(
             not tool_markers
             and len(text_joined) <= 80
             and next_is_tool
+            and not _short_signal(text_joined)
         )
 
         # Narration prefix ("Got it.", "Let me check.") used to be droppable,
@@ -308,11 +330,22 @@ def build_convo(entries: list[dict]) -> list[tuple[str, str]]:
                     str(inp.get("subagent_type") or ""),
                 )
 
+    # The next entry that isn't itself dropped (e.g. a `file-history-snapshot`
+    # spliced in between two real turns) — a plain entries[i+1] look-ahead
+    # sees the snapshot and makes trimming depend on where CC happened to
+    # insert it (spec-findings.md F2). Precomputed once, O(n).
+    nxt_idx: list[dict | None] = [None] * len(entries)
+    following: dict | None = None
+    for i in range(len(entries) - 1, -1, -1):
+        nxt_idx[i] = following
+        if entries[i].get("type") not in DROP_TOP_TYPES:
+            following = entries[i]
+
     seen_user: set[str] = set()
     seen_paths: set[str] = set()
     convo: list[tuple[str, str]] = []
     for i, e in enumerate(entries):
-        nxt = entries[i + 1] if i + 1 < len(entries) else None
+        nxt = nxt_idx[i]
         if e.get("type") in DROP_TOP_TYPES:
             continue
         if is_real_user(e):
@@ -325,33 +358,15 @@ def build_convo(entries: list[dict]) -> list[tuple[str, str]]:
             seen_user.add(t)
             convo.append(("user", t))
         elif e.get("type") == "user":
-            c = e.get("message", {}).get("content")
-            if isinstance(c, list):
-                from handoff.extract import _agent_report_text_from_tooluseresult
-
-                tur_text = _agent_report_text_from_tooluseresult(e.get("toolUseResult"))
-                for b in c:
-                    if not (isinstance(b, dict) and b.get("type") == "tool_result"):
-                        continue
-                    meta = agent_use_meta.get(str(b.get("tool_use_id") or ""))
-                    if not meta:
-                        continue
-                    text = tur_text
-                    if not text:
-                        tc = b.get("content")
-                        if isinstance(tc, list):
-                            text = "\n".join(
-                                blk.get("text", "")
-                                for blk in tc
-                                if isinstance(blk, dict) and blk.get("type") == "text"
-                            )
-                        elif isinstance(tc, str):
-                            text = tc
-                    text = (text or "").strip()
-                    if len(text) >= AGENT_REPORT_MIN_CHARS:
-                        desc = meta[0] or "(no description)"
-                        sub = f" {meta[1]}" if meta[1] else ""
-                        convo.append(("assistant", f"[Sub-agent report:{sub} {desc}]\n{text}"))
+            for tool_use_id, text in tool_result_texts(e):
+                meta = agent_use_meta.get(tool_use_id)
+                if not meta:
+                    continue
+                text = text.strip()
+                if len(text) >= AGENT_REPORT_MIN_CHARS:
+                    desc = meta[0] or "(no description)"
+                    sub = f" {meta[1]}" if meta[1] else ""
+                    convo.append(("assistant", f"[Sub-agent report:{sub} {desc}]\n{text}"))
         elif e.get("type") == "assistant":
             r = render_assistant(e, nxt, seen_paths=seen_paths)
             if r:

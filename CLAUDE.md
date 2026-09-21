@@ -133,6 +133,10 @@ NOT recompiled — Python's pyc check is mtime+size — so the suite keeps
 running the mutant. `find . -name __pycache__ -prune -exec rm -rf {} +`
 after restoring, or run pytest with `-p no:cacheprovider -B` …
 `PYTHONDONTWRITEBYTECODE=1` during mutation runs.
+Restore a mutant by copying the saved file back, never by
+string-replacing the mutation in reverse: `s.replace(new, old)` hits every
+other occurrence of `new` too (2026-09-21: turned the `auto-todowrite`
+return into `auto-tasks` and pasted a condition into four `last_msgs`).
 
 `tests/fixtures/raw/` is gitignored (PII). Fixture-dependent tests skip
 when raw fixtures are absent.
@@ -230,7 +234,7 @@ session_id: <sid>
 cwd: <abs path>
 created: <iso8601>
 last_resumed: <iso8601 or null>
-completion_signal: auto-todowrite | auto-user-msg | auto-open-q | auto-default | manual | backfill-*
+completion_signal: auto-tasks | auto-todowrite | auto-user-msg | auto-open-q | auto-default | manual | backfill-*
 archive_hash: <memory doc hash>
 recap: <one-line session summary or null>
 recap_source: llm | extracted | null
@@ -242,6 +246,8 @@ hold_until: <YYYY-MM-DD or null>
 Detector lives in `handoff/lifecycle.py:detect_status`. Precedence
 (first match wins):
 
+0. `auto-tasks`     — session's task dir: all tasks completed → `done`;
+   any open task vetoes `auto-user-msg` below
 1. `auto-todowrite` — last TodoWrite call: all entries completed → `done`
 2. `auto-user-msg`  — any of last 3 user msgs match completion regex → `done`
 3. `auto-open-q`    — final user msg looks like a question → `pending`
@@ -373,39 +379,34 @@ it is the only "hide forever without calling it done" bucket; `on_hold` is
 the "come back" one) and `install.sh` as the legacy non-marketplace path
 (links only off/on; the plugin cache is how commands ship).
 
-- `extract.is_injected_user_msg` substring-matches `<command-name>` etc.
-  anywhere → a user msg quoting a skill body is dropped. Anchor to the
-  first ~80 chars.
-- Char-slice truncation (`ASSISTANT_TURN_MAX_CHARS`,
-  `PASTED_PRESERVE_CHARS`) can land inside a ``` fence → rest of brief
-  renders as code. Cut at last newline, close an odd fence.
-- `transcript.py` overflow path re-parses the whole JSONL and reports the
-  total, not the remainder.
-- `hand list` N+1: `get_session` (full body) per row without a recap.
-- `archive.py`: `source_jsonl` abs path (username) stored in archive
-  metadata; a `,` in the cwd basename splits the project tag.
-- `detect_status` step 1 keys on `TodoWrite`; CC now uses
-  `TaskCreate/TaskUpdate`, so the strongest done-signal is dead. Read the
-  session's task dir via `tasks.read_tasks` instead.
-- `trim.py`: `same_turn`/`adjacent` drops discard ≤80-char substantive
-  answers; `nxt = entries[i+1]` sees `file-history-snapshot` entries so
-  trimming is non-deterministic across otherwise identical sessions;
-  `toolUseResult` text is applied to every `tool_result` block in an entry.
-- `commands/on.md`, `done.md`, `tasks.md`: unquoted `$ARGS` glob-expands;
-  `${ARG// /}` concatenates two accidental sids.
-- `load_jsonl` materialises the whole file (OOM ceiling on very large
-  sessions).
+Second pass, same day (`spec-findings.md`, `tests/test_findings.py`,
+`tests/test_commands_args.py`): ten more fixed — `is_injected_user_msg`
+scans only the first `INJECTED_SCAN_CHARS` (40; measured: all 33 injected
+msgs across the fixtures carry the marker at char 0, the spec's 80 still
+matched a marker quoted at char 36), `cut_at_line` (truncation ends on a
+whole line and closes an odd fence), transcript overflow counts the
+remainder from the live generator, archive `source_jsonl` home-relative +
+`project_tag_from_cwd` sanitised, `detect_status(entries, tasks)` reads the
+session's task dir (`auto-tasks`; open tasks veto `auto-user-msg`),
+trimmer `_short_signal` (7 of 263 dropped ≤80-char turns rescued, all
+findings), `nxt` skips `DROP_TOP_TYPES`, `tool_result_texts` (the
+`toolUseResult` text only stands in for a lone block), `done.md`/`archive.md`
+refuse two sids, `set -f` everywhere `$ARGUMENTS` is unquoted,
+`scripts/fixture_stats.py` shared by bench + render_html, render_html
+parses each fixture once.
 
-- Hoist `compute_fixture_stats` so bench.py and render_html.py stop
-  reimplementing the same per-fixture stats dict.
-- Hoist a shared `_tool_result_text` helper used by both
-  `extract_agent_reports` and `trim.build_convo`.
-- Memoize `load_jsonl` + `render_brief` in render_html.py — currently
-  parses + renders xhuge twice per run.
-- Fold the 6-pass `stats_for` fan-out in bench.py into a single walk.
+Measured and deliberately NOT fixed:
 
-These are wallclock wins on `xhuge.jsonl` (86 MB). Cold paths, low
-priority — only worth it if dev iteration on the report becomes painful.
+- `hand list` N+1 (`get_session` per row without a recap): 0.12 s wall
+  over 612 rows, 74 of them recap-less. Local SQLite; a second query path
+  buys nothing.
+- `load_jsonl` materialises the whole file: six consumers walk `entries`
+  (`detect_status`, `extract_recap`, `extract_title`, `render_brief`,
+  `extract_agent_reports`, `cwd_from_entries`). Streaming = six passes or
+  a redesign. No OOM observed on the 86 MB fixture; revisit on the first.
+- Folding bench's `extract_*` fan-out: bench is 45 s wall and the time is
+  `load_jsonl` + `render_brief` + tokenizer on xhuge, not the four
+  extract passes.
 
 ## Publish hygiene
 

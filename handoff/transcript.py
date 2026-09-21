@@ -132,7 +132,8 @@ def trim_transcript(jsonl_path: str | Path, max_chars: int = 100_000) -> str:
     seen_user: set[str] = set()
     total_chars = 0
 
-    for entry in _iter_jsonl(jsonl_path):
+    gen = _iter_jsonl(jsonl_path)
+    for entry in gen:
         if not isinstance(entry, dict):
             continue
 
@@ -166,14 +167,14 @@ def trim_transcript(jsonl_path: str | Path, max_chars: int = 100_000) -> str:
             break
 
         if len(line) > remaining:
-            # Count lines we're about to drop
-            remaining_lines = sum(
-                1
-                for e in _iter_jsonl(jsonl_path)
-                if e.get("type") in ("user", "assistant")
+            # Count what's left in the live generator instead of re-reading
+            # the whole file (spec-findings.md C) — the current entry counts
+            # as 1 since it was cut, not emitted.
+            rest = 1 + sum(
+                1 for e in gen if isinstance(e, dict) and e.get("type") in ("user", "assistant")
             )
             lines.append(line[:remaining])
-            lines.append(f"\n…[transcript continues {remaining_lines} lines]")
+            lines.append(f"\n…[transcript continues {rest} lines]")
             total_chars = max_chars
             break
 

@@ -131,7 +131,9 @@ def test_archive_includes_metadata(tiny_jsonl, marker_home):
 
     meta = json.loads(calls[0]["opts"]["--metadata"])
     assert meta["session_id"] == SESSION_ID[:8]
-    assert meta["source_jsonl"] == str(tiny_jsonl)
+    # HOME is tmp_path here; the archive stores the path home-relative so no
+    # username lands in a memory doc (spec-findings.md §D).
+    assert meta["source_jsonl"] == "~/session.jsonl"
 
 
 def test_archive_skips_empty_transcript(tmp_path, marker_home):
