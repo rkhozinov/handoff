@@ -20,8 +20,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from datetime import datetime, timezone
+
 from handoff.lifecycle import (
     FRONTMATTER_KEYS,
+    idle_days as _idle_days,
     now_iso,
     parse_frontmatter,
     strip_frontmatter,
@@ -279,6 +282,42 @@ def list_holds(conn: sqlite3.Connection) -> list[dict]:
         "ORDER BY hold_until IS NULL, hold_until ASC, created DESC"
     )
     return [dict(r) for r in cur.fetchall()]
+
+
+def list_idle(
+    conn: sqlite3.Connection,
+    *,
+    days: int,
+    cwd: str | None = None,
+    limit: int | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Open (`pending`/`in_progress`) rows untouched for `days`, longest-idle
+    first. SQL pre-filters on status/cwd only; the age cutoff is computed in
+    Python (via `lifecycle.idle_days`) so a test-supplied `now` is honoured
+    exactly and a row with no parseable timestamp is excluded — no
+    timestamp, no evidence. `hand review` REPORTS these; nothing here
+    mutates."""
+    now = now or datetime.now(timezone.utc)
+    cols = ", ".join(_LIST_COLUMNS)
+    where = ["status IN ('pending', 'in_progress')"]
+    params: list[str] = []
+    if cwd is not None:
+        where.append("cwd = ?")
+        params.append(cwd)
+    cur = conn.execute(f"SELECT {cols} FROM sessions WHERE {' AND '.join(where)}", params)
+    rows = []
+    for r in cur.fetchall():
+        row = dict(r)
+        d = _idle_days(row, now=now)
+        if d is None or d < days:
+            continue
+        row["idle_days"] = d
+        rows.append(row)
+    rows.sort(key=lambda r: -r["idle_days"])
+    if limit is not None:
+        rows = rows[:limit]
+    return rows
 
 
 def delete_session(conn: sqlite3.Connection, sid: str) -> bool:

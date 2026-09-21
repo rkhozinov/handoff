@@ -43,6 +43,7 @@ _STATUS_ICON = {
     "on_hold": "[yellow]⏸[/]",    # paused — parked
 }
 _EMPTY = "No sessions — run `/hand:off` or `hand rebuild`."
+IDLE_DAYS = 14
 
 
 def _display_title(row: dict) -> str:
@@ -71,6 +72,10 @@ def _item_text(row: dict) -> str:
     date = (row.get("created") or "").split("T")[0] or "?"
     title = escape(_display_title(row))
     meta = f"{date} · ~{_fmt_tokens(row.get('tokens'))} tok"
+    if lifecycle.is_stale(row, days=IDLE_DAYS):
+        n = lifecycle.idle_days(row)
+        if n is not None:
+            meta += f" · idle {n}d"
     return f"{icon} {title}\n  [dim]{meta}[/dim]"
 
 
@@ -260,6 +265,12 @@ class HandoffTUI(App):
         Binding("r", "reopen", "Reopen"),
         Binding("p", "hold", "Hold/release"),
         Binding("x", "delete", "Delete"),
+        # Review loop: `s` narrows to idle (untouched > IDLE_DAYS) briefs,
+        # `k` keeps the selected one (resets the idle clock, no status
+        # change) — same "report, then explicit decision" shape as `hand
+        # review`/`hand keep`. Nothing here auto-acts.
+        Binding("s", "toggle_idle", "Idle only"),
+        Binding("k", "keep", "Keep"),
         Binding("g", "scroll_top", "Top"),
         Binding("G", "scroll_bottom", "Bottom"),
         Binding("ctrl+d", "half_down", "½ down", show=False),
@@ -277,6 +288,7 @@ class HandoffTUI(App):
         self._dir = compaction_dir
         self._include_done = False
         self._include_archived = False
+        self._idle_only = False
         self._rows: list[dict] = []
         self._pool: list[dict] = []
         self._query = ""
@@ -352,12 +364,15 @@ class HandoffTUI(App):
                 if (s := _fuzzy_score(q, _haystack(r))) is not None
             ]
             scored.sort(key=lambda t: -t[0])   # best match first; stable on ties
-            return [r for _, r in scored]
-        rows = self._pool
-        if not self._include_done:
-            rows = [r for r in rows if r.get("status") != "done"]
-        if not self._include_archived:
-            rows = [r for r in rows if r.get("status") != "archived"]
+            rows = [r for _, r in scored]
+        else:
+            rows = self._pool
+            if not self._include_done:
+                rows = [r for r in rows if r.get("status") != "done"]
+            if not self._include_archived:
+                rows = [r for r in rows if r.get("status") != "archived"]
+        if self._idle_only:
+            rows = [r for r in rows if lifecycle.is_stale(r, days=IDLE_DAYS)]
         return rows
 
     async def _repopulate(self) -> None:
@@ -477,6 +492,15 @@ class HandoffTUI(App):
     async def action_toggle_archived(self) -> None:
         self._include_archived = not self._include_archived
         await self._reload()
+
+    async def action_toggle_idle(self) -> None:
+        self._idle_only = not self._idle_only
+        await self._repopulate()
+
+    async def action_keep(self) -> None:
+        await self._mutate(
+            lambda sid: dbcli.do_keep(sid, compaction_dir=self._dir, db_path=self._db_path)
+        )
 
     def action_rename(self) -> None:
         row = self._selected_row()

@@ -346,6 +346,17 @@ def is_stale(
     return age.days >= days
 
 
+def idle_days(fm: dict[str, str | None], *, now: datetime | None = None) -> int | None:
+    """Whole days since `last_resumed` (or `created`) — shared by
+    `db.list_idle` and the TUI's idle badge. None when the timestamp is
+    missing or unparseable (no evidence, no number)."""
+    now = now or datetime.now(timezone.utc)
+    ref = _parse_iso(fm.get("last_resumed") or fm.get("created"))
+    if ref is None:
+        return None
+    return (now - ref).days
+
+
 def parse_hold_until(s: str | None) -> date | None:
     """`hold_until` is a bare `YYYY-MM-DD`; anything else → None (never
     raise on a hand-edited brief)."""

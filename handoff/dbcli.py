@@ -13,10 +13,11 @@ import json
 import os
 import re
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from handoff import cli, db, tasks
+from handoff.tasks import _UUID_RE
 from handoff.fsutil import atomic_write
 from handoff.extract import extract_title, load_jsonl
 from handoff.lifecycle import (
@@ -75,6 +76,40 @@ def _first_user_line(body: str) -> str | None:
         if line.startswith("U:"):
             return line[2:].strip()
     return None
+
+
+# `sid8` etc. — a bare hex prefix a user typed off a `hand review`/`hand
+# list` row. Anything that isn't plainly a hex prefix (a full UUID, or a
+# `smoke`-style test id) is returned unchanged so it falls through to the
+# existing full-sid error paths untouched.
+_HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{8,35}$")
+
+
+def resolve_sid(token: str, *, compaction_dir: str, db_path=None) -> str:
+    """Expand an 8+ hex-char prefix to its one matching session id. A full
+    UUID or anything that doesn't look like a hex prefix passes through
+    unchanged. No match → token unchanged (caller reports "no brief", the
+    control case). More than one match → raise, never guess."""
+    if _UUID_RE.match(token) or not _HEX_PREFIX_RE.match(token):
+        return token
+
+    candidates: set[str] = set()
+    with db.connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id LIKE ? ESCAPE '\\'",
+            (token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
+        )
+        candidates.update(r[0] for r in cur.fetchall())
+
+    d = Path(os.path.expanduser(compaction_dir))
+    if d.is_dir():
+        candidates.update(p.stem for p in d.glob(f"{token}*.md"))
+
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    if not candidates:
+        return token
+    raise ValueError(f"ambiguous prefix {token} ({len(candidates)} matches)")
 
 
 # --------------------------------------------------------------------------- #
@@ -225,6 +260,29 @@ def do_resume(sid: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str
     with db.connect(db_path) as conn:
         _sync_row(conn, sid, db.set_resumed(conn, sid, status="in_progress", last_resumed=ts), fm, body, p)
     return True, f"HANDON_OK sid={sid} status=in_progress last_resumed={ts}"
+
+
+def do_keep(sid: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str]:
+    """`hand review`'s "not now" answer: stamp `last_resumed` only — status
+    and signal untouched, so keep never masquerades as progress. Resets the
+    idle clock (`set_resumed` also clears `hold_until`; fine — a held brief
+    never shows up in review)."""
+    try:
+        p = _brief_path(sid, compaction_dir)
+    except ValueError as e:
+        return False, f"HANDKEEP_ERROR {e}"
+    if not p.is_file():
+        return False, f"HANDKEEP_ERROR no brief at {p}"
+    fm, body = _read_split(p)
+    if not fm:
+        return False, "HANDKEEP_ERROR brief has no frontmatter"
+
+    ts = now_iso()
+    fm["last_resumed"] = ts
+    _write_brief(p, fm, body)
+    with db.connect(db_path) as conn:
+        _sync_row(conn, sid, db.set_resumed(conn, sid, status=fm["status"], last_resumed=ts), fm, body, p)
+    return True, f"HANDKEEP_OK sid={sid} last_resumed={ts}"
 
 
 def do_delete(sid: str, *, compaction_dir: str, remove_file: bool, db_path=None) -> tuple[bool, str]:
@@ -443,9 +501,23 @@ def do_on_restore(
 # --------------------------------------------------------------------------- #
 # subcommand handlers
 # --------------------------------------------------------------------------- #
+def _resolve_or_report(token: str, *, dir_: str, db_path, err_prefix: str) -> str | None:
+    """`resolve_sid` wrapper for subcommand handlers: prints the
+    `<PREFIX>_ERROR ambiguous …` line and returns None on ambiguity, else
+    the resolved (or unchanged) token."""
+    try:
+        return resolve_sid(token, compaction_dir=dir_, db_path=db_path)
+    except ValueError as e:
+        print(f"{err_prefix}_ERROR {e}")
+        return None
+
+
 def _cmd_done(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDDONE")
+    if sid is None:
+        return 1
     ok, msg = do_done(
-        args.sid, reopen=args.reopen, compaction_dir=args.dir, db_path=args.db
+        sid, reopen=args.reopen, compaction_dir=args.dir, db_path=args.db
     )
     print(msg)
     return 0 if ok else 1
@@ -476,7 +548,11 @@ def _cmd_on(args) -> int:
             print(line)
         return rc
     rc = 0
-    for sid in args.sid:
+    for tok in args.sid:
+        sid = _resolve_or_report(tok, dir_=args.dir, db_path=args.db, err_prefix="HANDON")
+        if sid is None:
+            rc = 1
+            continue
         ok, msg = do_resume(sid, compaction_dir=args.dir, db_path=args.db)
         print(msg)
         if not ok:
@@ -501,24 +577,33 @@ def _cmd_off(args) -> int:
 
 
 def _cmd_rename(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDRENAME")
+    if sid is None:
+        return 1
     ok, msg = do_rename(
-        args.sid, " ".join(args.title), compaction_dir=args.dir, db_path=args.db
+        sid, " ".join(args.title), compaction_dir=args.dir, db_path=args.db
     )
     print(msg)
     return 0 if ok else 1
 
 
 def _cmd_archive(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDARCH")
+    if sid is None:
+        return 1
     ok, msg = do_archive(
-        args.sid, unarchive=args.unarchive, compaction_dir=args.dir, db_path=args.db
+        sid, unarchive=args.unarchive, compaction_dir=args.dir, db_path=args.db
     )
     print(msg)
     return 0 if ok else 1
 
 
 def _cmd_hold(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDHOLD")
+    if sid is None:
+        return 1
     ok, msg = do_hold(
-        args.sid, note=args.note, until=args.until, release=args.release,
+        sid, note=args.note, until=args.until, release=args.release,
         compaction_dir=args.dir, db_path=args.db,
     )
     print(msg)
@@ -547,8 +632,11 @@ def _cmd_holds(args) -> int:
 
 
 def _cmd_unarchive(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDARCH")
+    if sid is None:
+        return 1
     ok, msg = do_archive(
-        args.sid, unarchive=True, compaction_dir=args.dir, db_path=args.db
+        sid, unarchive=True, compaction_dir=args.dir, db_path=args.db
     )
     print(msg)
     return 0 if ok else 1
@@ -600,10 +688,13 @@ def _cmd_list(args) -> int:
 
 
 def _cmd_show(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDSHOW")
+    if sid is None:
+        return 1
     with db.connect(args.db) as conn:
-        row = db.get_session(conn, args.sid)
+        row = db.get_session(conn, sid)
     if not row:
-        print(f"HANDSHOW_ERROR no row for sid={args.sid}")
+        print(f"HANDSHOW_ERROR no row for sid={sid}")
         return 1
     print(f"session_id: {row['session_id']}")
     for k in ("status", "title", "cwd", "created", "last_resumed", "recap"):
@@ -630,11 +721,55 @@ def _cmd_search(args) -> int:
 
 
 def _cmd_rm(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDRM")
+    if sid is None:
+        return 1
     ok, msg = do_delete(
-        args.sid, compaction_dir=args.dir, remove_file=args.file, db_path=args.db
+        sid, compaction_dir=args.dir, remove_file=args.file, db_path=args.db
     )
     print(msg)
     return 0 if ok else 1
+
+
+def _cmd_keep(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDKEEP")
+    if sid is None:
+        return 1
+    ok, msg = do_keep(sid, compaction_dir=args.dir, db_path=args.db)
+    print(msg)
+    return 0 if ok else 1
+
+
+def _cmd_review(args) -> int:
+    now = None
+    if args.now:
+        now = datetime.fromisoformat(args.now)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+    with db.connect(args.db) as conn:
+        all_rows = db.list_idle(conn, days=args.days, cwd=args.cwd, now=now)
+        total = len(all_rows)
+        rows = all_rows if args.all else all_rows[: args.limit]
+        if not total:
+            print(f"No idle briefs (open, untouched > {args.days}d).")
+            return 0
+
+        print(
+            f"Idle briefs (open, untouched > {args.days}d): {total} — showing {len(rows)}, "
+            "longest idle first. Decide per row: hand done|hold|archive|keep <sid8>"
+        )
+        print()
+        for r in rows:
+            label = r.get("title") or r.get("recap")
+            if not label:
+                full = db.get_session(conn, r["session_id"])
+                label = _first_user_line((full or {}).get("body") or "") or r["session_id"][:8]
+            cwd_base = os.path.basename((r.get("cwd") or "").rstrip("/"))
+            print(
+                f"  {r['session_id'][:8]}  {(r.get('status') or '?'):<12} idle {r['idle_days']:>3}d  "
+                f"{label}  [{cwd_base}]"
+            )
+    return 0
 
 
 def _transcript_path(sid: str, cwd: str, projects_dir: str) -> Path:
@@ -1053,6 +1188,22 @@ def build_parser() -> argparse.ArgumentParser:
     pt = sub.add_parser("tui", help="Launch the 2-pane TUI")
     _add_db_args(pt)
     pt.set_defaults(func=_cmd_tui)
+
+    pk = sub.add_parser("keep", help="Reset the idle clock without changing status")
+    pk.add_argument("sid")
+    _add_db_args(pk)
+    pk.set_defaults(func=_cmd_keep)
+
+    prv = sub.add_parser(
+        "review", help="Report idle open briefs (untouched > --days). Never mutates."
+    )
+    prv.add_argument("--days", type=int, default=14)
+    prv.add_argument("--cwd", default=None)
+    prv.add_argument("--limit", type=int, default=25)
+    prv.add_argument("--all", action="store_true", help="No limit")
+    prv.add_argument("--now", default=None, help="(testing) evaluate idleness at this instant")
+    _add_db_args(prv)
+    prv.set_defaults(func=_cmd_review)
 
     _add_tasks_parser(sub)
     return p
