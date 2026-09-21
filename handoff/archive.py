@@ -292,8 +292,11 @@ def maybe_prune_archives(now: float | None = None) -> dict | None:
     except OSError:
         return None
     try:
-        stats = prune_archives(limit=AUTO_PRUNE_LIMIT)
+        # Stamp FIRST: two /hand:off runs on the stamp day would otherwise
+        # both pass the throttle and both spawn the ~1s-per-doc deletes.
         stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text("{}", encoding="utf-8")
+        stats = prune_archives(limit=AUTO_PRUNE_LIMIT)
         stamp.write_text(json.dumps(stats), encoding="utf-8")
         return stats
     except Exception as e:  # housekeeping must never fail the handoff

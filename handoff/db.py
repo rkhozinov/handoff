@@ -209,10 +209,13 @@ def search_sessions(conn: sqlite3.Connection, query: str) -> list[dict]:
     """Substring (case-insensitive LIKE) match over title/recap/body. Returns
     the small columns, newest-first."""
     cols = ", ".join(_LIST_COLUMNS)
-    like = f"%{query}%"
+    # `_` and `%` are LIKE wildcards; a user typing `hello_world` means the
+    # literal underscore, so escape them (and the escape char itself).
+    esc = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{esc}%"
     cur = conn.execute(
         f"SELECT {cols} FROM sessions "
-        "WHERE title LIKE ? OR recap LIKE ? OR body LIKE ? "
+        "WHERE title LIKE ? ESCAPE '\\' OR recap LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' "
         "ORDER BY created DESC, indexed_at DESC",
         (like, like, like),
     )

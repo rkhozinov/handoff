@@ -80,6 +80,14 @@ def _first_user_line(body: str) -> str | None:
 # --------------------------------------------------------------------------- #
 # mutation internals (shared by subcommands + TUI)
 # --------------------------------------------------------------------------- #
+def _sync_row(conn, sid: str, matched: bool, fm, body, p: Path) -> None:
+    """A file mutation whose UPDATE matched no row (e.g. `hand rm` without
+    --file, or a DB rebuilt from a subset) must not print *_OK over a
+    missing row — mirror the file into the DB so list/TUI agree with it."""
+    if not matched:
+        db.upsert_session(conn, fm=fm, body=body, brief_path=str(p))
+
+
 def do_done(sid: str, *, reopen: bool, compaction_dir: str, db_path=None) -> tuple[bool, str]:
     """Flip a brief to done (or in_progress on reopen) with signal `manual`, in
     both the file and the DB. Returns (ok, message)."""
@@ -99,7 +107,7 @@ def do_done(sid: str, *, reopen: bool, compaction_dir: str, db_path=None) -> tup
     fm["completion_signal"] = "manual"
     _write_brief(p, fm, body)
     with db.connect(db_path) as conn:
-        db.set_status(conn, sid, status, "manual")
+        _sync_row(conn, sid, db.set_status(conn, sid, status, "manual"), fm, body, p)
     return True, f"HANDDONE_OK action={action} sid={sid} status={status}"
 
 
@@ -123,7 +131,7 @@ def do_archive(sid: str, *, unarchive: bool, compaction_dir: str, db_path=None) 
     fm["completion_signal"] = "manual"
     _write_brief(p, fm, body)
     with db.connect(db_path) as conn:
-        db.set_status(conn, sid, status, "manual")
+        _sync_row(conn, sid, db.set_status(conn, sid, status, "manual"), fm, body, p)
     return True, f"HANDARCH_OK action={action} sid={sid} status={status}"
 
 
@@ -149,8 +157,8 @@ def do_hold(
         fm["hold_until"] = None
         _write_brief(p, fm, body)
         with db.connect(db_path) as conn:
-            db.set_hold(conn, sid, status="in_progress", signal="manual",
-                        note=fm.get("hold_note"), until=fm.get("hold_until"))
+            _sync_row(conn, sid, db.set_hold(conn, sid, status="in_progress", signal="manual",
+                                             note=fm.get("hold_note"), until=fm.get("hold_until")), fm, body, p)
         return True, f"HANDHOLD_OK action=released sid={sid}"
 
     if until is not None and parse_hold_until(until) is None:
@@ -162,8 +170,8 @@ def do_hold(
     fm["hold_until"] = until
     _write_brief(p, fm, body)
     with db.connect(db_path) as conn:
-        db.set_hold(conn, sid, status="on_hold", signal="manual",
-                    note=fm.get("hold_note"), until=fm.get("hold_until"))
+        _sync_row(conn, sid, db.set_hold(conn, sid, status="on_hold", signal="manual",
+                                         note=fm.get("hold_note"), until=fm.get("hold_until")), fm, body, p)
     return True, f"HANDHOLD_OK action=held sid={sid} until={fm.get('hold_until')}"
 
 
@@ -215,7 +223,7 @@ def do_resume(sid: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str
     fm["hold_until"] = None
     _write_brief(p, fm, body)
     with db.connect(db_path) as conn:
-        db.set_resumed(conn, sid, status="in_progress", last_resumed=ts)
+        _sync_row(conn, sid, db.set_resumed(conn, sid, status="in_progress", last_resumed=ts), fm, body, p)
     return True, f"HANDON_OK sid={sid} status=in_progress last_resumed={ts}"
 
 
@@ -645,7 +653,10 @@ def do_backfill_titles(
     (the TUI/list fall back to recap/sid for display)."""
     stats = {"scanned": 0, "updated": 0, "no_transcript": 0, "no_title": 0}
     with db.connect(db_path) as conn:
-        rows = [r for r in db.list_sessions(conn, include_done=True) if not (r.get("title") or "").strip()]
+        rows = [
+            r for r in db.list_sessions(conn, include_done=True, include_archived=True)
+            if not (r.get("title") or "").strip()
+        ]
         for r in rows:
             stats["scanned"] += 1
             sid = r["session_id"]

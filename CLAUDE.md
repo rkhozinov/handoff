@@ -360,7 +360,14 @@ signal, which is sticky — auto-stale won't re-close it.
 
 ## Known follow-ups (not blocking)
 
-From the 2026-09-21 review, deferred (verified, low impact):
+From the 2026-09-21 review, deferred (verified, low impact). Fixed the same
+day, not deferred: LIKE escaping in `search_sessions`, `backfill-titles`
+visiting `archived` rows, every `do_*` mutation upserting the row from the
+file when its UPDATE matched nothing (`_sync_row`), prune stamp written
+before pruning. Kept on purpose: the `archived` status (0 users today, but
+it is the only "hide forever without calling it done" bucket; `on_hold` is
+the "come back" one) and `install.sh` as the legacy non-marketplace path
+(links only off/on; the plugin cache is how commands ship).
 
 - `extract.is_injected_user_msg` substring-matches `<command-name>` etc.
   anywhere → a user msg quoting a skill body is dropped. Anchor to the
@@ -371,12 +378,8 @@ From the 2026-09-21 review, deferred (verified, low impact):
 - `transcript.py` overflow path re-parses the whole JSONL and reports the
   total, not the remainder.
 - `hand list` N+1: `get_session` (full body) per row without a recap.
-- `db.search_sessions`: LIKE without ESCAPE (`_`/`%` are wildcards).
-- `backfill-titles` skips `archived` rows; `set_status`/`set_resumed`
-  rowcount ignored (`*_OK` printed with no DB row).
 - `archive.py`: `source_jsonl` abs path (username) stored in archive
-  metadata; a `,` in the cwd basename splits the project tag; prune stamp
-  written after pruning (two same-day `/hand:off` both prune).
+  metadata; a `,` in the cwd basename splits the project tag.
 - `detect_status` step 1 keys on `TodoWrite`; CC now uses
   `TaskCreate/TaskUpdate`, so the strongest done-signal is dead. Read the
   session's task dir via `tasks.read_tasks` instead.
