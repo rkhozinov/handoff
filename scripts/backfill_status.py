@@ -26,6 +26,7 @@ from pathlib import Path
 # Allow `python scripts/backfill_status.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from handoff.fsutil import atomic_write
 from handoff.lifecycle import (
     FRONTMATTER_KEYS,
     parse_frontmatter,
@@ -34,13 +35,6 @@ from handoff.lifecycle import (
 
 COMPACTION_DIR = Path.home() / ".claude" / "compaction"
 
-_DONE_RE = re.compile(
-    r"\b("
-    r"ship(?:ped|d)?|merged|lgtm|thanks?|thx|done|that\s+worked|all\s+(?:good|set)|"
-    r"perfect|finished|wrap(?:ped)?\s*up|complete[d]?|closed?|resolved|fixed"
-    r")\b",
-    re.IGNORECASE,
-)
 _QUESTION_PREFIX_RE = re.compile(
     r"^\s*(what|why|how|when|where|which|who|can|could|should|would|do|does|did|is|are|will)\b",
     re.IGNORECASE,
@@ -58,11 +52,12 @@ def _extract_user_msgs(body: str) -> list[str]:
 
 def detect_status_from_body(body: str) -> tuple[str, str]:
     """Same precedence as `handoff.lifecycle.detect_status`, minus the
-    TodoWrite signal (not visible in rendered brief)."""
+    TodoWrite signal (not visible in rendered brief). Never auto-marks
+    `done` from body text: a completion-shaped word inside prose (e.g.
+    "the fixed-width bug is still there") is not a completion signal, and
+    false-done hides a brief from /hand:on."""
     msgs = _extract_user_msgs(body)
     tail = msgs[-3:]
-    if any(_DONE_RE.search(m) for m in tail):
-        return ("done", "backfill-user-msg")
     if tail:
         last = tail[-1].strip()
         if last.endswith("?") or _QUESTION_PREFIX_RE.match(last):
@@ -119,7 +114,7 @@ def backfill_file(p: Path, apply: bool) -> dict:
         "archive_hash": _archive_from_body(body),
     }
     if apply:
-        p.write_text(render_frontmatter(fm) + body, encoding="utf-8")
+        atomic_write(p, render_frontmatter(fm) + body)
     return {"path": str(p), "action": "backfill", "status": status, "signal": signal}
 
 

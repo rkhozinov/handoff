@@ -350,12 +350,21 @@ def test_iter_real_user_msgs_filters_synthetic():
     "msg",
     [
         "ok", "OK", "yes", "no", "nah", "yep", "thanks", "go", "done",
-        "good", "great", "perfect", "cool", "k", "kk", "1", "2", "42", "ab",
+        "good", "great", "perfect", "cool", "k", "kk",
         "  ok  ", "yes!", "Done.", "right.",
     ],
 )
 def test_short_ack_classified_as_noise(msg):
     assert extract.is_noise_user_msg(msg)
+
+
+# Reversed on 2026-09-21: these used to be pinned as NOISE via a generic
+# `\d{1,3}|[a-z]{1,3}` alternation, which also ate "why?", "rm", "CI?" and
+# the bare number a user types to answer the /hand:on picker. A short token
+# is only noise when it is a known ack.
+@pytest.mark.parametrize("msg", ["1", "2", "42", "ab", "why?", "rm"])
+def test_short_non_ack_tokens_are_signal(msg):
+    assert not extract.is_noise_user_msg(msg)
 
 
 @pytest.mark.parametrize(

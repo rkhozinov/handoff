@@ -48,6 +48,12 @@ NARRATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Narration is short. Measured on the fixtures (2026-09-21): every
+# NARRATION_RE-matching turn over 500 chars was a diagnosis ("Looking at the
+# diff, the root cause is…"), everything ≤ 200 was filler. Dropping by prefix
+# alone lost whole answers.
+NARRATION_MAX_CHARS = 200
+
 # Per-turn assistant text cap. Prevents one giant turn (e.g. a long
 # `Recommendation` block) from dominating the brief. Full reasoning
 # stays in the memory doc archive; the brief keeps head + tail marker.
@@ -158,6 +164,7 @@ def render_assistant(
             not tool_markers
             and not has_code_fence
             and bool(NARRATION_RE.match(text_joined))
+            and len(text_joined) <= NARRATION_MAX_CHARS
         )
 
         # Short assistant ack/reply with no tool_use: "Done." "Fixed." "Looks good."

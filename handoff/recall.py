@@ -69,6 +69,8 @@ def store_agent_reports(
             result = json.loads(proc.stdout)
         except json.JSONDecodeError:
             continue
+        if not isinstance(result, dict):
+            continue
         # store dedups by content hash; a skipped duplicate still "stored".
         if result.get("status") not in ("error", "rejected"):
             stored += 1

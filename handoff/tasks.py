@@ -167,11 +167,38 @@ def _numeric_id(tid: object) -> int:
         return 0
 
 
-def next_id(dest_tasks: list[dict]) -> int:
+def next_id(dest_tasks: list[dict], floor: int = 0) -> int:
     """First id safe to allocate in the destination. Holes are never
     backfilled — CC allocates from `max(max_file_id, highwatermark) + 1`, and
-    a hole may be an id something still references."""
-    return max((_numeric_id(t.get("id")) for t in dest_tasks), default=0) + 1
+    a hole may be an id something still references. `floor` folds in
+    `read_id_floor()` so we never reallocate an id CC itself would refuse."""
+    return max(max((_numeric_id(t.get("id")) for t in dest_tasks), default=0), floor) + 1
+
+
+def read_id_floor(dest_dir: Path) -> int:
+    """Highest id CC would refuse to reuse: `.highwatermark` (highest id
+    ever deleted) or any `<n>.json` present — including ones `read_tasks`
+    rejected as unreadable, which still occupy the name."""
+    try:
+        names = sorted(p.name for p in dest_dir.iterdir())
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return 0
+
+    hwm = 0
+    hwm_path = dest_dir / ".highwatermark"
+    if hwm_path.is_file():
+        try:
+            hwm = int(hwm_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            hwm = 0
+
+    max_name_id = 0
+    for name in names:
+        if name in CONTROL_FILES or not name.endswith(".json"):
+            continue
+        max_name_id = max(max_name_id, _numeric_id(name[: -len(".json")]))
+
+    return max(hwm, max_name_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -278,12 +305,15 @@ def plan_import(
     mode: str = MODE_MERGE,
     only_open: bool = True,
     already_imported: dict[str, str] | None = None,
+    id_floor: int = 0,
 ) -> ImportPlan:
     """Compute the id remap, rewritten edges, dropped refs and skips. Pure —
     writes nothing, and never mutates `bundle` or `dest_tasks`.
 
     merge (default): destination tasks are never touched; imported tasks get
-    fresh ids from `next_id(dest_tasks)` upward, in source id order.
+    fresh ids from `max(next_id(dest_tasks), id_floor)` upward, in source id
+    order. `id_floor` should come from `read_id_floor(dest_dir)` — reading
+    the dir is effectful, so callers compute it, not this function.
     replace: bundle tasks keep their original ids and the destination's task
     files are cleared. Opt-in only — it is the one mode that loses data.
     """
@@ -305,11 +335,14 @@ def plan_import(
     candidates.sort(key=lambda t: _numeric_id(t["id"]))
 
     # A source task already imported into this destination is a no-op, but it
-    # stays in the id map so a sibling's edge to it still resolves.
+    # stays in the id map so a sibling's edge to it still resolves — unless
+    # the destination task the manifest points at is gone (deleted/completed
+    # and swept), in which case the entry is stale and we re-import.
+    dest_ids = {str(t.get("id")) for t in dest_tasks}
     fresh: list[dict] = []
     for task in candidates:
         key = manifest_key(source_sid, task["id"])
-        if mode == MODE_MERGE and key in seen:
+        if mode == MODE_MERGE and key in seen and seen[key] in dest_ids:
             plan.id_map[task["id"]] = seen[key]
             plan.skipped += 1
             continue
@@ -320,7 +353,7 @@ def plan_import(
         for task in fresh:
             plan.id_map[task["id"]] = task["id"]
     else:
-        nid = next_id(dest_tasks)
+        nid = next_id(dest_tasks, floor=id_floor)
         for task in fresh:
             plan.id_map[task["id"]] = str(nid)
             nid += 1

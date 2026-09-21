@@ -488,6 +488,7 @@ def do_tasks_import(
         mode=mode,
         only_open=only_open,
         already_imported=tasks.read_manifest(manifest),
+        id_floor=tasks.read_id_floor(dest_dir),
     )
     warnings.extend(plan.warnings)
 

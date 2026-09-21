@@ -67,10 +67,13 @@ DROP_TOP_TYPES = frozenset({
 })
 
 # Patterns that mark a user msg as noise (not a real signal-bearing turn).
+# The trailing alternation used to be generic (`\d{1,3}|[a-z]{1,3}`) and ate
+# real signal: "why?", "CI?", "rm", and the bare number a user types to
+# answer the /hand:on picker. Spell out the actual short acks instead.
 SHORT_ACK_RE = re.compile(
     r"^\s*(ok|okay|yes|yep|yup|no|nope|nah|sure|thanks|thank\s*you|go|done|"
     r"good|great|perfect|cool|nice|right|correct|fine|alright|k|kk|"
-    r"\d{1,3}|[a-z]{1,3})\s*[.!?]?\s*$",
+    r"ty|np|ya|yo|y|n)\s*[.!?]?\s*$",
     re.IGNORECASE,
 )
 COMPACTION_CONTINUATION_RE = re.compile(

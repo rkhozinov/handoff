@@ -133,18 +133,23 @@ def main(argv: list[str] | None = None) -> int:
         frontmatter=render_frontmatter(fm),
     )
 
+    atomic_write(brief_path, brief)
+
     # Auto-store sub-agent reports to memory so they survive /clear and become
     # recall-able in future sessions. Use the full (untruncated) bodies.
+    # Best-effort: the brief above is already on disk, so a memory-CLI
+    # explosion here must never turn a successful run into an error.
     agent_stored = 0
     agent_count = 0
     if not args.no_agent_store:
-        full_reports = extract_agent_reports(entries, max_chars=0)
-        agent_count = len(full_reports)
-        agent_stored = store_agent_reports(
-            full_reports, project_tag=project_tag_from_cwd(cwd)
-        )
-
-    atomic_write(brief_path, brief)
+        try:
+            full_reports = extract_agent_reports(entries, max_chars=0)
+            agent_count = len(full_reports)
+            agent_stored = store_agent_reports(
+                full_reports, project_tag=project_tag_from_cwd(cwd)
+            )
+        except Exception as e:  # best-effort: never let memory housekeeping cost the brief
+            sys.stderr.write(f"agent-store skipped: {e}\n")
 
     if not args.no_db:
         from handoff import db

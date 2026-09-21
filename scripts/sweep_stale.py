@@ -19,12 +19,15 @@ Wire to cron for hands-off lifecycle hygiene:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from handoff import db
+from handoff.fsutil import atomic_write
 from handoff.lifecycle import (
     STALE_DAYS_DEFAULT,
     is_stale,
@@ -48,35 +51,41 @@ def _is_brief_file(p: Path) -> bool:
     return True
 
 
-def sweep(directory: Path, *, days: int, apply: bool, now: datetime | None = None) -> dict:
+def sweep(
+    directory: Path, *, days: int, apply: bool, now: datetime | None = None,
+    db_path: str | None = None,
+) -> dict:
     now = now or datetime.now(timezone.utc)
     counts = {"scanned": 0, "skipped_no_fm": 0, "skipped_not_stale": 0, "flipped": 0}
     rows: list[dict] = []
 
-    for p in sorted(directory.iterdir()):
-        if not _is_brief_file(p):
-            continue
-        counts["scanned"] += 1
-        text = p.read_text(encoding="utf-8")
-        fm = parse_frontmatter(text)
-        if not fm:
-            counts["skipped_no_fm"] += 1
-            continue
-        if not is_stale(fm, now=now, days=days):
-            counts["skipped_not_stale"] += 1
-            continue
+    # One connection for the whole run; dry-run never opens it (no file, no DB touch).
+    with db.connect(db_path) if apply else contextlib.nullcontext(None) as conn:
+        for p in sorted(directory.iterdir()):
+            if not _is_brief_file(p):
+                continue
+            counts["scanned"] += 1
+            text = p.read_text(encoding="utf-8")
+            fm = parse_frontmatter(text)
+            if not fm:
+                counts["skipped_no_fm"] += 1
+                continue
+            if not is_stale(fm, now=now, days=days):
+                counts["skipped_not_stale"] += 1
+                continue
 
-        new_fm = mark_stale(fm)
-        rows.append({
-            "sid": p.stem[:8],
-            "was": fm.get("status"),
-            "created": fm.get("created"),
-            "last_resumed": fm.get("last_resumed"),
-        })
-        if apply:
-            body = strip_frontmatter(text)
-            p.write_text(render_frontmatter(new_fm) + body, encoding="utf-8")
-        counts["flipped"] += 1
+            new_fm = mark_stale(fm)
+            rows.append({
+                "sid": p.stem[:8],
+                "was": fm.get("status"),
+                "created": fm.get("created"),
+                "last_resumed": fm.get("last_resumed"),
+            })
+            if apply:
+                body = strip_frontmatter(text)
+                atomic_write(p, render_frontmatter(new_fm) + body)
+                db.set_status(conn, p.stem, "done", "auto-stale")
+            counts["flipped"] += 1
 
     return {"counts": counts, "rows": rows}
 
@@ -88,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"Idle threshold in days (default: {STALE_DAYS_DEFAULT})")
     ap.add_argument("--dir", default=str(COMPACTION_DIR),
                     help=f"Brief dir (default: {COMPACTION_DIR})")
+    ap.add_argument("--db", default=None, help="DB path (default: db module default)")
     args = ap.parse_args(argv)
 
     d = Path(args.dir).expanduser()
@@ -95,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"No such dir: {d}\n")
         return 1
 
-    result = sweep(d, days=args.days, apply=args.apply)
+    result = sweep(d, days=args.days, apply=args.apply, db_path=args.db)
     c = result["counts"]
 
     mode = "APPLIED" if args.apply else "DRY-RUN"
