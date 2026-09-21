@@ -26,6 +26,7 @@ from handoff.lifecycle import (
     parse_frontmatter,
     parse_hold_until,
     render_frontmatter,
+    sanitize_recap,
     strip_frontmatter,
 )
 
@@ -699,6 +700,8 @@ def _cmd_show(args) -> int:
     print(f"session_id: {row['session_id']}")
     for k in ("status", "title", "cwd", "created", "last_resumed", "recap"):
         print(f"{k}: {row.get(k)}")
+    for copy in _reviewed_copies(sid, args.dir):
+        print(f"reviewed: {copy}")
     print("---")
     print(row.get("body") or "")
     return 0
@@ -770,6 +773,120 @@ def _cmd_review(args) -> int:
                 f"{label}  [{cwd_base}]"
             )
     return 0
+
+
+def _reviewed_copies(sid: str, dir_: str) -> list[Path]:
+    rdir = Path(os.path.expanduser(dir_)) / "reviewed"
+    if not rdir.is_dir():
+        return []
+    return sorted(rdir.glob(f"{sid}.*.md"))
+
+
+_REVIEWED_TS_RE = re.compile(r"\.(\d{8}T\d{6}Z)(?:-\d+)?\.md$")
+
+
+def _assess_row(r: dict, *, dir_: str, bundle_dir: str) -> list[str]:
+    sid = r["session_id"]
+    p = _brief_path(sid, dir_)
+    label = r.get("title") or r.get("recap") or sid[:8]
+    cwd_base = os.path.basename((r.get("cwd") or "").rstrip("/"))
+    lines = [
+        f"ASSESS {sid[:8]}  {r.get('status') or '?'}  {label}  [{cwd_base}]",
+        f"    cwd:    {r.get('cwd') or ''}",
+        f"    brief:  {p if p.is_file() else 'MISSING'}",
+    ]
+    if r.get("hold_note"):
+        lines.append(f"    note:   {r['hold_note']}")
+    if r.get("hold_until"):
+        lines.append(f"    due:    {r['hold_until']}")
+    bpath = tasks.bundle_path(sid, base=bundle_dir)
+    try:
+        bundle = json.loads(bpath.read_text(encoding="utf-8"))
+        open_tasks = [t for t in bundle.get("tasks", []) if t.get("status") != "completed"]
+    except (OSError, json.JSONDecodeError, ValueError):
+        open_tasks = []
+    if open_tasks:
+        subjects = "; ".join(t.get("subject", "") for t in open_tasks)
+        lines.append(f"    tasks:  {len(open_tasks)} open — {subjects}")
+    copies = _reviewed_copies(sid, dir_)
+    if copies:
+        m = _REVIEWED_TS_RE.search(copies[-1].name)
+        last = m.group(1) if m else ""
+        last = f"{last[:4]}-{last[4:6]}-{last[6:8]}T{last[9:11]}:{last[11:13]}:{last[13:15]}Z" if last else ""
+        lines.append(f"    reviewed: {len(copies)} version(s), last {last}")
+    lines.append("")
+    return lines
+
+
+def _cmd_assess(args) -> int:
+    with db.connect(args.db) as conn:
+        if args.sid:
+            rows = []
+            for tok in args.sid:
+                sid = _resolve_or_report(tok, dir_=args.dir, db_path=args.db, err_prefix="HANDASSESS")
+                if sid is None:
+                    return 1
+                row = db.get_session(conn, sid)
+                if not row:
+                    print(f"HANDASSESS_ERROR no brief sid={sid}")
+                    return 1
+                rows.append(row)
+            print(f"Assess briefs: {len(rows)}.")
+        else:
+            holds = db.list_holds(conn)
+            total = len(holds)
+            if not total:
+                print("No held briefs.")
+                return 0
+            rows = holds if args.all else holds[: args.limit]
+            print(
+                f"Assess held briefs: {total} — showing {len(rows)}. One read-only agent "
+                "per row; decide with hand done|keep|hold <sid8>."
+            )
+        print()
+        for r in rows:
+            for line in _assess_row(r, dir_=args.dir, bundle_dir=args.bundle_dir):
+                print(line)
+    return 0
+
+
+def _cmd_reviewed(args) -> int:
+    sid = _resolve_or_report(args.sid, dir_=args.dir, db_path=args.db, err_prefix="HANDREVIEWED")
+    if sid is None:
+        return 1
+    p = _brief_path(sid, args.dir)
+    if not p.is_file():
+        print(f"HANDREVIEWED_ERROR no brief at {p}")
+        return 1
+
+    ts = now_iso().replace("-", "").replace(":", "")
+    rdir = Path(os.path.expanduser(args.dir)) / "reviewed"
+    copy = rdir / f"{sid}.{ts}.md"
+    n = 1
+    while copy.exists():
+        copy = rdir / f"{sid}.{ts}-{n}.md"
+        n += 1
+    atomic_write(copy, p.read_text(encoding="utf-8"))
+
+    note = sanitize_recap(args.note)
+    fm, body = _read_split(p)
+    fm["hold_note"] = note
+    _write_brief(p, fm, body)
+    # Mirror the note into the DB row here: do_done only UPDATEs
+    # status/signal, so without this the file would carry the assessment
+    # and `hand holds`/`list` (DB-backed) would not.
+    with db.connect(args.db) as conn:
+        db.upsert_session(conn, fm=fm, body=body, brief_path=str(p))
+
+    print(f"HANDREVIEWED_OK sid={sid} then={args.then} copy={copy}")
+    if args.then == "done":
+        ok, msg = do_done(sid, reopen=False, compaction_dir=args.dir, db_path=args.db)
+    elif args.then == "release":
+        ok, msg = do_hold(sid, note=None, until=None, release=True, compaction_dir=args.dir, db_path=args.db)
+    else:
+        ok, msg = do_hold(sid, note=note, until=args.until, release=False, compaction_dir=args.dir, db_path=args.db)
+    print(msg)
+    return 0 if ok else 1
 
 
 def _transcript_path(sid: str, cwd: str, projects_dir: str) -> Path:
@@ -1204,6 +1321,26 @@ def build_parser() -> argparse.ArgumentParser:
     prv.add_argument("--now", default=None, help="(testing) evaluate idleness at this instant")
     _add_db_args(prv)
     prv.set_defaults(func=_cmd_review)
+
+    pas = sub.add_parser(
+        "assess", help="Pack held briefs for one read-only agent per row. Never mutates."
+    )
+    pas.add_argument("sid", nargs="*", help="Explicit sid8 prefixes (uncapped, any status)")
+    pas.add_argument("--limit", type=int, default=10)
+    pas.add_argument("--all", action="store_true", help="No limit (default selection only)")
+    pas.add_argument("--bundle-dir", default=tasks.DEFAULT_BUNDLE_DIR, help="Bundle dir")
+    _add_db_args(pas)
+    pas.set_defaults(func=_cmd_assess)
+
+    prev = sub.add_parser(
+        "reviewed", help="Record an assess decision; keeps the original brief as a versioned copy"
+    )
+    prev.add_argument("sid")
+    prev.add_argument("--note", required=True, help="The assessment (becomes hold_note)")
+    prev.add_argument("--then", required=True, choices=["done", "release", "keep"])
+    prev.add_argument("--until", default=None, help="Resume-by date, YYYY-MM-DD (only with --then keep)")
+    _add_db_args(prev)
+    prev.set_defaults(func=_cmd_reviewed)
 
     _add_tasks_parser(sub)
     return p

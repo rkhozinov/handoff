@@ -179,7 +179,7 @@ change the output shape there first, never in the `.md`.
 - `/hand:list [--all] [--any-cwd]` (`commands/list.md`) — grouped by
   status, current cwd, done hidden by default.
 - `/hand:hold` / `/hand:holds` — see "on_hold" below; `/hand:review` — see
-  "Review" below.
+  "Review" below; `/hand:assess` — see "Assess" below.
 - `/hand:tasks` (`commands/tasks.md`) — manual door into the same
   export/import machinery `/hand:off` and `/hand:on` drive automatically.
 
@@ -367,6 +367,21 @@ lives in `dbcli.resolve_sid`, CLI layer only; `do_*` take full sids. TUI:
 `s` = idle-only filter, `k` = keep, idle rows show `idle Nd`
 (`tui.IDLE_DAYS`). `/hand:review` shows the report, asks, and applies only
 what the user answered.
+
+## Assess — bulk triage of held briefs
+
+`hand assess [sid …] [--limit N] [--all]` (`/hand:assess`) is a pure report
+(same ground rule: never mutates) that packs each `on_hold` brief's path,
+cwd, hold note and open tasks for one read-only sonnet agent per row. The
+user decides per row; `hand reviewed <sid8> --note "…" --then
+done|release|keep [--until D]` records the decision — it copies the
+ORIGINAL brief verbatim under `<dir>/reviewed/` first (a resumed session's
+next `/hand:off` rewrites the `.md` in place) before applying via the
+existing `do_done`/`do_hold`.
+The note is mirrored into the DB row explicitly (`do_done` only UPDATEs
+status/signal; the e2e test caught the file/DB drift). `hand assess` shows
+`reviewed: N version(s)` and `hand show` lists the copies. Spec:
+`docs/specs/assess.md`.
 
 ## Known follow-ups (not blocking)
 

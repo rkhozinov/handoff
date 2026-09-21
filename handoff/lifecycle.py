@@ -58,7 +58,7 @@ DONE_MSG_MAX_CHARS = 100
 
 _DONE_RE = re.compile(
     r"\b("
-    r"ship(?:ped|d)?|"
+    r"shipped|ship\s+it|"
     r"merged|"
     r"lgtm|"
     r"thanks?|"

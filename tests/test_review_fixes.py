@@ -99,3 +99,15 @@ def test_write_brief_keeps_old_content_when_write_fails(tmp_path, monkeypatch):
         dbcli._write_brief(p, {"status": "done", "session_id": SID}, "NEW\n")
     assert p.read_text() == "OLD"
     assert os.listdir(tmp_path) == [f"{SID}.md"]
+
+
+# Found by the /hand:assess e2e (2026-09-21): a one-line transcript "ship the
+# widget" was classified done/auto-user-msg — bare `ship` is an imperative
+# request, not a completion. `shipped` / `ship it` still count.
+@pytest.mark.parametrize("msg,expected", [
+    ("ship the widget", ("in_progress", "auto-default")),
+    ("shipped", ("done", "auto-user-msg")),
+    ("ship it", ("done", "auto-user-msg")),
+])
+def test_bare_ship_is_a_request_not_completion(msg, expected):
+    assert detect_status([_user("start"), _user(msg)]) == expected
