@@ -70,6 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip the sessions.db index upsert (testing only)",
     )
     p.add_argument(
+        "--db",
+        default=None,
+        help="sessions.db path override (testing)",
+    )
+    p.add_argument(
         "--token-mode",
         choices=VALID_MODES,
         default="chars4",
@@ -157,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # brief = frontmatter + body; the DB stores the body only (every
         # frontmatter field is already a typed column).
-        with db.connect() as conn:
+        with db.connect(args.db) as conn:
             db.upsert_session(
                 conn,
                 fm=fm,
