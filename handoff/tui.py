@@ -238,6 +238,13 @@ class HandoffTUI(App):
             pass
 
     def on_unmount(self) -> None:
+        # Stop the debounced detail render first: a timer firing after the
+        # connection is closed raised `'NoneType' has no attribute 'execute'`
+        # (flaky under run_test, where unmount follows the last keypress
+        # within the 120 ms debounce).
+        if self._show_timer is not None:
+            self._show_timer.stop()
+            self._show_timer = None
         if self._conn is not None:
             self._conn.close()
             self._conn = None
@@ -324,6 +331,8 @@ class HandoffTUI(App):
         st.update(RichMarkdown(body))
 
     def _show(self, sid: str) -> None:
+        if self._conn is None:  # unmounted while the debounce was pending
+            return
         row = db.get_session(self._conn, sid)
         body = (row or {}).get("body") or "(brief body missing)"
         self._cur_sid = sid

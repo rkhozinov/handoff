@@ -36,10 +36,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from handoff.fsutil import atomic_write
 from handoff.lifecycle import now_iso
 
 DEFAULT_TASKS_DIR = "~/.claude/tasks"
@@ -367,21 +367,7 @@ def read_manifest(path: Path) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # apply (the only effectful function)
 # --------------------------------------------------------------------------- #
-def _atomic_write(path: Path, text: str) -> None:
-    """Write via a sibling temp file + os.replace. A crash mid-apply must not
-    leave a half-written `<id>.json` for CC to choke on."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".handoff-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+_atomic_write = atomic_write  # kept as the module-local name used below
 
 
 def apply_plan(plan: ImportPlan, dest_dir: Path, manifest_path: Path) -> None:

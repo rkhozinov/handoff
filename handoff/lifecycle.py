@@ -135,6 +135,11 @@ def _last_real_user_msgs(entries: list[dict], n: int) -> list[str]:
     return out
 
 
+def _looks_like_question(msg: str) -> bool:
+    m = msg.strip()
+    return m.endswith("?") or bool(_QUESTION_PREFIX_RE.match(m))
+
+
 def detect_status(entries: list[dict]) -> tuple[Status, Signal]:
     """Classify a transcript's end-state. See module docstring for the
     precedence rules. Returns `(status, signal)` so the caller can record
@@ -148,19 +153,21 @@ def detect_status(entries: list[dict]) -> tuple[Status, Signal]:
             return ("done", "auto-todowrite")
 
     # 2. Last N user messages — explicit completion language. Only terse
-    #    messages count (see DONE_MSG_MAX_CHARS).
+    #    messages count (see DONE_MSG_MAX_CHARS), and a message that reads as
+    #    a question never counts: "is it fixed?" contains `fixed` but is the
+    #    opposite of completion (review 2026-09-21, probed → false-done).
     last_msgs = _last_real_user_msgs(entries, n=3)
     if last_msgs and any(
-        len(m.strip()) <= DONE_MSG_MAX_CHARS and _DONE_RE.search(m)
+        len(m.strip()) <= DONE_MSG_MAX_CHARS
+        and not _looks_like_question(m)
+        and _DONE_RE.search(m)
         for m in last_msgs
     ):
         return ("done", "auto-user-msg")
 
     # 3. Final user message looks like an open question.
-    if last_msgs:
-        final = last_msgs[-1].strip()
-        if final.endswith("?") or _QUESTION_PREFIX_RE.match(final):
-            return ("pending", "auto-open-q")
+    if last_msgs and _looks_like_question(last_msgs[-1]):
+        return ("pending", "auto-open-q")
 
     # 4. Fallback — resumable work, no strong terminal signal either way.
     return ("in_progress", "auto-default")
@@ -267,6 +274,15 @@ def strip_frontmatter(text: str) -> str:
     return text[m.end():]
 
 
+def _fm_value(v: str | None) -> str:
+    """One line per key: the parser is line-based, so a newline inside a
+    value (title from CC, cwd, argv-joined rename) would otherwise be read
+    back as a second key — `title: a\nstatus: done` flipped status."""
+    if v is None:
+        return "null"
+    return re.sub(r"\s+", " ", str(v)).strip()
+
+
 def render_frontmatter(fm: dict[str, str | None]) -> str:
     """Render a frontmatter dict as a `---`-fenced YAML block. Keys appear in
     `FRONTMATTER_KEYS` order; unknown keys are appended after (alpha-sorted)
@@ -274,11 +290,9 @@ def render_frontmatter(fm: dict[str, str | None]) -> str:
     lines = ["---"]
     known = set(FRONTMATTER_KEYS)
     for k in FRONTMATTER_KEYS:
-        v = fm.get(k)
-        lines.append(f"{k}: {'null' if v is None else v}")
+        lines.append(f"{k}: {_fm_value(fm.get(k))}")
     for k in sorted(set(fm) - known):
-        v = fm[k]
-        lines.append(f"{k}: {'null' if v is None else v}")
+        lines.append(f"{k}: {_fm_value(fm[k])}")
     lines.append("---\n")
     return "\n".join(lines)
 
@@ -309,7 +323,10 @@ def is_stale(
     status = fm.get("status")
     if status not in ("pending", "in_progress"):
         return False
-    if (now or datetime.now(timezone.utc)) is None:
+    # A manual status (`/hand:done --reopen`) is the user's call; the sweep
+    # must not undo it after 14 days. Without this the documented
+    # reversibility was false (review 2026-09-21).
+    if fm.get("completion_signal") == "manual":
         return False
     now = now or datetime.now(timezone.utc)
 

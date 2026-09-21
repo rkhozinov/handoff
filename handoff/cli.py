@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from handoff.archive import archive_full_session, maybe_prune_archives
+from handoff.fsutil import atomic_write
 from handoff.extract import (
     cwd_from_entries,
     extract_agent_reports,
@@ -143,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             full_reports, project_tag=project_tag_from_cwd(cwd)
         )
 
-    brief_path.write_text(brief, encoding="utf-8")
+    atomic_write(brief_path, brief)
 
     if not args.no_db:
         from handoff import db

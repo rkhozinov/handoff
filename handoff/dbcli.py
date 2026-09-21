@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from handoff import db, tasks
+from handoff.fsutil import atomic_write
 from handoff.extract import extract_title, load_jsonl
 from handoff.lifecycle import (
     now_iso,
@@ -38,8 +39,20 @@ _BADGES = {
 # --------------------------------------------------------------------------- #
 # brief-file helpers (file is authoritative; DB mirrors)
 # --------------------------------------------------------------------------- #
+# A sid is a filename component. Real ones are UUIDs, tests use short slugs;
+# what must never pass is a path (`../x`, `a/b`) — `hand rm --file ../../x`
+# would unlink outside the compaction dir (review 2026-09-21).
+_SID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _check_sid(sid: str) -> str:
+    if not sid or sid in (".", "..") or not _SID_RE.match(sid):
+        raise ValueError(f"bad-session-id sid={sid!r}")
+    return sid
+
+
 def _brief_path(sid: str, compaction_dir: str) -> Path:
-    return Path(os.path.expanduser(compaction_dir)) / f"{sid}.md"
+    return Path(os.path.expanduser(compaction_dir)) / f"{_check_sid(sid)}.md"
 
 
 def _read_split(p: Path) -> tuple[dict[str, str | None], str]:
@@ -48,7 +61,9 @@ def _read_split(p: Path) -> tuple[dict[str, str | None], str]:
 
 
 def _write_brief(p: Path, fm: dict[str, str | None], body: str) -> None:
-    p.write_text(render_frontmatter(fm) + body, encoding="utf-8")
+    # Atomic: the brief is the authoritative artifact; a half-written one
+    # resets `created`/`last_resumed` on the next /hand:off.
+    atomic_write(p, render_frontmatter(fm) + body)
 
 
 def _first_user_line(body: str) -> str | None:
@@ -64,7 +79,10 @@ def _first_user_line(body: str) -> str | None:
 def do_done(sid: str, *, reopen: bool, compaction_dir: str, db_path=None) -> tuple[bool, str]:
     """Flip a brief to done (or in_progress on reopen) with signal `manual`, in
     both the file and the DB. Returns (ok, message)."""
-    p = _brief_path(sid, compaction_dir)
+    try:
+        p = _brief_path(sid, compaction_dir)
+    except ValueError as e:
+        return False, f"HANDDONE_ERROR {e}"
     if not p.is_file():
         return False, f"HANDDONE_ERROR no brief at {p}"
     fm, body = _read_split(p)
@@ -85,7 +103,10 @@ def do_archive(sid: str, *, unarchive: bool, compaction_dir: str, db_path=None) 
     """Shelve a session (status `archived`, signal `manual`) or restore it to
     `in_progress`, in both the file and the DB. Archived sessions are hidden
     from the default list/picker but kept intact. Sticky across /hand:off."""
-    p = _brief_path(sid, compaction_dir)
+    try:
+        p = _brief_path(sid, compaction_dir)
+    except ValueError as e:
+        return False, f"HANDARCH_ERROR {e}"
     if not p.is_file():
         return False, f"HANDARCH_ERROR no brief at {p}"
     fm, body = _read_split(p)
@@ -107,7 +128,10 @@ def do_rename(sid: str, title: str, *, compaction_dir: str, db_path=None) -> tup
     title = (title or "").strip()
     if not title:
         return False, "HANDRENAME_ERROR empty title"
-    p = _brief_path(sid, compaction_dir)
+    try:
+        p = _brief_path(sid, compaction_dir)
+    except ValueError as e:
+        return False, f"HANDRENAME_ERROR {e}"
     if not p.is_file():
         return False, f"HANDRENAME_ERROR no brief at {p}"
     fm, body = _read_split(p)
@@ -123,7 +147,10 @@ def do_rename(sid: str, title: str, *, compaction_dir: str, db_path=None) -> tup
 def do_resume(sid: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str]:
     """/hand:on file+DB update: flip pending/in_progress → in_progress and stamp
     last_resumed. A `done` brief is left untouched (user must --reopen)."""
-    p = _brief_path(sid, compaction_dir)
+    try:
+        p = _brief_path(sid, compaction_dir)
+    except ValueError as e:
+        return False, f"HANDON_ERROR {e}"
     if not p.is_file():
         return False, f"HANDON_ERROR no brief at {p}"
     fm, body = _read_split(p)
@@ -131,6 +158,10 @@ def do_resume(sid: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str
         return False, "HANDON_ERROR brief has no frontmatter"
     if fm.get("status") == "done":
         return True, f"HANDON_DONE sid={sid} (brief marked done — not flipped)"
+    if fm.get("status") == "archived":
+        # Archived is a manual, sticky decision; reading the brief is fine,
+        # silently un-archiving it is not (/hand:archive --unarchive does that).
+        return True, f"HANDON_ARCHIVED sid={sid} (brief archived — not flipped)"
 
     ts = now_iso()
     fm["status"] = "in_progress"
@@ -144,11 +175,14 @@ def do_resume(sid: str, *, compaction_dir: str, db_path=None) -> tuple[bool, str
 def do_delete(sid: str, *, compaction_dir: str, remove_file: bool, db_path=None) -> tuple[bool, str]:
     """Delete the DB row. Removes the brief file too only when remove_file is
     set (briefs are restore sources — destructive)."""
+    try:
+        p = _brief_path(sid, compaction_dir)
+    except ValueError as e:
+        return False, f"HANDRM_ERROR {e}"
     with db.connect(db_path) as conn:
         removed = db.delete_session(conn, sid)
     extra = ""
     if remove_file:
-        p = _brief_path(sid, compaction_dir)
         if p.is_file():
             p.unlink()
             extra = " file=removed"
