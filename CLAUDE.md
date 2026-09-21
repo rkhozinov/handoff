@@ -76,6 +76,10 @@ regression — fix the filter, don't relax the invariant.
   `chars4` (default fallback), `hf` (Xenova/claude-tokenizer), `api`
   (Anthropic SDK), `auto` (HF if importable else chars4). Lazy imports —
   don't hoist `transformers`/`anthropic` to module level.
+- `handoff/fsutil.py` — `atomic_write(path, text)` (temp file + `os.replace`).
+  Every authoritative file — briefs, task `<id>.json`, bundles, manifests —
+  goes through it; a truncated brief resets `created`/`last_resumed` on the
+  next `/hand:off`.
 - `handoff/__init__.py` — empty marker.
 - `scripts/bench.py`, `scripts/render_html.py` — dev tools, not shipped
   via `/hand:off`.
@@ -131,7 +135,9 @@ when raw fixtures are absent.
 - `/hand:off` lives at `commands/off.md`. Uses `${CLAUDE_SESSION_ID}`
   to derive both the session id and the transcript path from one source
   — don't decouple, that bug surfaced on 2026-05-08 (brief content
-  belonged to a different session than the filename). It also exports the
+  belonged to a different session than the filename). The recap is passed
+  through a quoted heredoc, not `RECAP='…'` — a `'` in LLM-composed text
+  was a shell syntax error and `'; cmd; '` was command execution. It also exports the
   session's task list to `~/.claude/compaction/tasks/<sid>.json`. That
   step is strictly best-effort and swallows its own errors: the brief is
   the primary artifact and a task-export failure must NEVER turn a
@@ -154,6 +160,8 @@ when raw fixtures are absent.
   later `/hand:off` on the same sid will NOT auto-revive it.
 - `/hand:list [--all] [--any-cwd]` lives at `commands/list.md`. Reads
   frontmatter, groups by status, defaults to current cwd + hides done.
+- `/hand:hold` (`commands/hold.md`) and `/hand:holds` (`commands/holds.md`)
+  — see "on_hold" below.
 - `/hand:tasks` lives at `commands/tasks.md`. Manual door into the same
   export/import machinery `/hand:off` and `/hand:on` drive automatically.
 
@@ -202,7 +210,7 @@ Every brief carries a YAML frontmatter block written by `render_brief`:
 
 ```yaml
 ---
-status: in_progress       # pending | in_progress | done
+status: in_progress       # pending | in_progress | done | archived | on_hold
 title: <CC ai-title from transcript, or null>
 session_id: <sid>
 cwd: <abs path>
@@ -212,6 +220,8 @@ completion_signal: auto-todowrite | auto-user-msg | auto-open-q | auto-default |
 archive_hash: <memory doc hash>
 recap: <one-line session summary or null>
 recap_source: llm | extracted | null
+hold_note: <why parked / what next, or null>
+hold_until: <YYYY-MM-DD or null>
 ---
 ```
 
@@ -223,6 +233,10 @@ Detector lives in `handoff/lifecycle.py:detect_status`. Precedence
 3. `auto-open-q`    — final user msg looks like a question → `pending`
 4. `auto-default`   — fallback → `in_progress`
 
+A message that reads as a question (`?` suffix or a wh-/aux-verb prefix)
+never counts as completion, even if it contains a keyword — "is it fixed?"
+was classified `done` before 2026-09-21 (`_looks_like_question`).
+
 **Conservative bias:** uncertainty → `in_progress`, NEVER `done`.
 False-`done` hides briefs from `/hand:on` (bad); false-`in_progress`
 just clutters the picker (mild). Don't loosen the regex without strong
@@ -230,7 +244,40 @@ evidence.
 
 `/hand:off` re-runs are idempotent: `created` and `last_resumed` are
 preserved from the existing brief; `status` is re-detected unless the
-current value is manual-`done` (then user wins).
+current value is a manual `done` / `archived` / `on_hold`
+(`STICKY_MANUAL_STATUSES` — then the user wins).
+
+## on_hold — the "come back later" shelf
+
+`in_progress` is not a shelf: the live DB had 384 of them, most abandoned.
+`on_hold` is an explicit, curated park with a reason and an optional
+deadline. It is a **status** (not a flag) because every filter — `hand
+list`, the `/hand:on` picker, `is_stale`, `archive._open_archive_hashes`,
+TUI icons — keys on status.
+
+- `/hand:hold <note> [--until YYYY-MM-DD]` = the `/hand:off` snapshot block
+  (recap, brief, archive, task bundle) + `hand hold`. Guarantees a brief
+  exists. `/hand:hold <sid> <note>` holds an existing brief without
+  re-snapshotting. The snapshot block is a COPY of off.md's — keep in sync.
+- `/hand:holds [--due]` (`hand holds`) is the retrieval view, all cwds,
+  soonest deadline first, each row with a paste-ready
+  `cd <cwd> && claude --resume <sid>   |  /hand:on <sid>`. `--due` prints
+  nothing when nothing is due — `hooks/holds-due.sh` runs it on
+  `SessionStart` so an overdue hold nags at the next session start.
+- `/hand:on <sid>` releases a hold: status → `in_progress`, `hold_until`
+  cleared, `hold_note` kept as history. `hand hold <sid> --release` does the
+  same without restoring.
+- Held briefs are exempt from `scripts/sweep_stale.py` (status gate) and
+  their archives are kept by `prune_archives` regardless of `open_days`
+  (`ALWAYS_KEEP_STATUSES`) — an explicit hold is the user saying "I will
+  come back".
+- `extract_title` prefers the LAST `custom-title` entry (user-set via
+  `/rename`, what `claude --resume "<name>"` accepts) over `ai-title`.
+- `scripts/import_onhold.py` is the one-off migration from a hand-kept
+  `claude --resume …` list. Measured 2026-09-21: 6 of 17 names mapped to
+  2–3 session ids (a resumed session re-writes `custom-title` with its own
+  `sessionId`), so an explicit `/hand:on <sid>` on the line wins, else the
+  newest transcript; the rest are reported as `others`.
 
 ## Recap + session DB
 
@@ -278,7 +325,10 @@ isn't available; it's conservative.
 `scripts/sweep_stale.py` flips `pending`/`in_progress` → `done` (signal
 `auto-stale`) when the most-recent activity (`last_resumed` if set, else
 `created`) is older than `--days` (default `STALE_DAYS_DEFAULT = 14`).
-Manual statuses are never touched.
+Manual statuses are never touched — including a manual `in_progress` from
+`/hand:done --reopen` (`is_stale` checks `completion_signal`; before
+2026-09-21 it didn't and the sweep undid reopens). The sweep updates the
+DB row in the same run (`--db` to override).
 
 ```bash
 PYTHONPATH=. python3 scripts/sweep_stale.py              # dry-run
@@ -295,6 +345,35 @@ Reversible: `/hand:done <sid> --reopen` revives a brief with a manual
 signal, which is sticky — auto-stale won't re-close it.
 
 ## Known follow-ups (not blocking)
+
+From the 2026-09-21 review, deferred (verified, low impact):
+
+- `extract.is_injected_user_msg` substring-matches `<command-name>` etc.
+  anywhere → a user msg quoting a skill body is dropped. Anchor to the
+  first ~80 chars.
+- Char-slice truncation (`ASSISTANT_TURN_MAX_CHARS`,
+  `PASTED_PRESERVE_CHARS`) can land inside a ``` fence → rest of brief
+  renders as code. Cut at last newline, close an odd fence.
+- `transcript.py` overflow path re-parses the whole JSONL and reports the
+  total, not the remainder.
+- `hand list` N+1: `get_session` (full body) per row without a recap.
+- `db.search_sessions`: LIKE without ESCAPE (`_`/`%` are wildcards).
+- `backfill-titles` skips `archived` rows; `set_status`/`set_resumed`
+  rowcount ignored (`*_OK` printed with no DB row).
+- `archive.py`: `source_jsonl` abs path (username) stored in archive
+  metadata; a `,` in the cwd basename splits the project tag; prune stamp
+  written after pruning (two same-day `/hand:off` both prune).
+- `detect_status` step 1 keys on `TodoWrite`; CC now uses
+  `TaskCreate/TaskUpdate`, so the strongest done-signal is dead. Read the
+  session's task dir via `tasks.read_tasks` instead.
+- `trim.py`: `same_turn`/`adjacent` drops discard ≤80-char substantive
+  answers; `nxt = entries[i+1]` sees `file-history-snapshot` entries so
+  trimming is non-deterministic across otherwise identical sessions;
+  `toolUseResult` text is applied to every `tool_result` block in an entry.
+- `commands/on.md`, `done.md`, `tasks.md`: unquoted `$ARGS` glob-expands;
+  `${ARG// /}` concatenates two accidental sids.
+- `load_jsonl` materialises the whole file (OOM ceiling on very large
+  sessions).
 
 - Hoist `compute_fixture_stats` so bench.py and render_html.py stop
   reimplementing the same per-fixture stats dict.
